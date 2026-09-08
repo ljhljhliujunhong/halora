@@ -156,3 +156,16 @@ export function formatTokens(n) {
 export function formatCount(n) {
   return Number(n || 0).toLocaleString("en-US");
 }
+
+export function formatDuration(ms) {
+  if (ms == null || !Number.isFinite(Number(ms)) || Number(ms) < 0) return "";
+  const total = Math.max(0, Math.round(Number(ms) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours}小时`);
+  if (minutes) parts.push(`${minutes}分钟`);
+  if (seconds || !parts.length) parts.push(`${seconds}秒`);
+  return `用时 ${parts.join(" ")}`;
+}

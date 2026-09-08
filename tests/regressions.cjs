@@ -11,7 +11,7 @@ fs.mkdirSync(cache, { recursive: true });
 const root = fs.mkdtempSync(path.join(cache, "regression-"));
 process.env.GROK_HOME = path.join(root, "grok");
 const { buildContext, rememberCompaction } = require("../electron/context.cjs");
-const { canonicalCwd } = require("../electron/sessions.cjs");
+const { canonicalCwd, readTranscript, recordTurnDuration } = require("../electron/sessions.cjs");
 const writeJson = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data));
@@ -237,4 +237,98 @@ test("switching chats keeps the other session running and accepts a second promp
   waits.get(b.id)({});
   await pendingB;
   assert.equal(h.snapshot().runningIds.length, 0);
+});
+
+test("turn durations restore from events.jsonl and sidecar after reopen", () => {
+  const f = fixture("duration", "chat");
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "first question" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "first answer" }] }),
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "second question" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "second answer" }] }),
+  ].join("\n") + "\n");
+  const start1 = "2026-09-07T14:51:15.037Z";
+  const end1 = "2026-09-07T14:52:32.942Z";
+  const start2 = "2026-09-07T14:54:48.102Z";
+  const end2 = "2026-09-07T14:54:57.086Z";
+  fs.writeFileSync(path.join(f.dir, "events.jsonl"), [
+    JSON.stringify({ ts: start1, type: "turn_started", turn_number: 0 }),
+    JSON.stringify({ ts: end1, type: "turn_ended", outcome: "completed" }),
+    JSON.stringify({ ts: start2, type: "turn_started", turn_number: 1 }),
+    JSON.stringify({ ts: end2, type: "turn_ended", outcome: "completed" }),
+  ].join("\n") + "\n");
+  let msgs = readTranscript(f.cwd, f.id);
+  const first = msgs.filter((item) => item.role === "assistant");
+  assert.equal(first.length, 2);
+  assert.equal(first[0].durationMs, Date.parse(end1) - Date.parse(start1));
+  assert.equal(first[1].durationMs, Date.parse(end2) - Date.parse(start2));
+  recordTurnDuration(f.cwd, f.id, {
+    startedAt: 1000,
+    endedAt: 124000,
+    durationMs: 123000,
+    user: "second question",
+  });
+  msgs = readTranscript(f.cwd, f.id);
+  const second = msgs.filter((item) => item.role === "assistant");
+  assert.equal(second[0].durationMs, Date.parse(end1) - Date.parse(start1));
+  assert.equal(second[1].durationMs, 123000);
+});
+
+test("unclosed turn_started still yields a duration, open turn does not", () => {
+  const f = fixture("duration", "open-turn");
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "one" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "a1" }] }),
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "two" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "a2" }] }),
+  ].join("\n") + "\n");
+  fs.writeFileSync(path.join(f.dir, "events.jsonl"), [
+    JSON.stringify({ ts: "2026-09-08T02:21:40.000Z", type: "turn_started" }),
+    JSON.stringify({ ts: "2026-09-08T02:25:51.000Z", type: "turn_started" }),
+    JSON.stringify({ ts: "2026-09-08T02:26:10.000Z", type: "turn_ended", outcome: "completed" }),
+  ].join("\n") + "\n");
+  const msgs = readTranscript(f.cwd, f.id).filter((item) => item.role === "assistant");
+  assert.equal(msgs[0].durationMs, Date.parse("2026-09-08T02:25:51.000Z") - Date.parse("2026-09-08T02:21:40.000Z"));
+  assert.equal(msgs[1].durationMs, Date.parse("2026-09-08T02:26:10.000Z") - Date.parse("2026-09-08T02:25:51.000Z"));
+});
+
+test("an in-progress assistant does not inherit the previous turn duration", () => {
+  const f = fixture("duration", "live-tail");
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "one" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "a1" }] }),
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "two" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "still running" }] }),
+  ].join("\n") + "\n");
+  fs.writeFileSync(path.join(f.dir, "events.jsonl"), [
+    JSON.stringify({ ts: "2026-09-08T16:06:54.000Z", type: "turn_started" }),
+    JSON.stringify({ ts: "2026-09-08T16:08:22.000Z", type: "turn_ended", outcome: "completed" }),
+    JSON.stringify({ ts: "2026-09-08T16:10:33.000Z", type: "turn_started" }),
+  ].join("\n") + "\n");
+  const msgs = readTranscript(f.cwd, f.id).filter((item) => item.role === "assistant");
+  assert.equal(msgs[0].durationMs, Date.parse("2026-09-08T16:08:22.000Z") - Date.parse("2026-09-08T16:06:54.000Z"));
+  assert.equal(msgs[1].durationMs, undefined);
+});
+
+test("send-prompt records duration and compact does not", async () => {
+  const f = fixture("duration", "persist");
+  const h = mainHarness();
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.acp.notice = completion(f, 16187);
+  await h.handlers.get("compact")(null, "keep");
+  assert.equal(fs.existsSync(path.join(f.dir, "halora-turns.jsonl")), false);
+  h.acp.prompt = async (id) => {
+    h.acp.emit("notification", "session/update", {
+      sessionId: id,
+      update: { sessionUpdate: "agent_message_chunk", content: { text: "hi" } },
+    });
+    return {};
+  };
+  await h.handlers.get("send-prompt")(null, { text: "hello there", sessionId: f.id, cwd: f.cwd });
+  const rows = fs.readFileSync(path.join(f.dir, "halora-turns.jsonl"), "utf8").trim().split(/\n/);
+  assert.equal(rows.length, 1);
+  const row = JSON.parse(rows[0]);
+  assert.ok(row.durationMs >= 0);
+  assert.equal(row.user, "hello there");
 });

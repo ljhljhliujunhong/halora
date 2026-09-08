@@ -7,6 +7,7 @@ import {
   filterCommands,
   findCommand,
   formatCount,
+  formatDuration,
   formatTokens,
   mentionAt,
   mergeCommands,
@@ -818,7 +819,12 @@ function runSummary(thought, tools, running) {
   };
 }
 
-function RunFold({ thought, tools, cwd, running }) {
+function messageDuration(message, running, now, turnStart) {
+  if (running) return formatDuration(now - (message.startedAt || turnStart || now));
+  return formatDuration(message.durationMs);
+}
+
+function RunFold({ thought, tools, cwd, running, duration }) {
   const hasThought = Boolean(String(thought || "").trim());
   const hasTools = Boolean(tools?.length);
   if (!hasThought && !hasTools) return null;
@@ -831,6 +837,7 @@ function RunFold({ thought, tools, cwd, running }) {
         </span>
         <span className="activity-label">{summary.label}</span>
         <DiffStats stats={summary.stats} />
+        {duration ? <span className="turn-time">{duration}</span> : null}
         <span className="activity-caret">›</span>
       </summary>
       <div className="run-fold-body">
@@ -909,7 +916,10 @@ export function App() {
   const filesRef = useRef({});
   const queuesStore = useRef({});
   const sendingStore = useRef({});
+  const turnStartRef = useRef({});
+  const prevRunningRef = useRef(new Set());
   const runningRef = useRef(new Set());
+  const [now, setNow] = useState(() => Date.now());
   const inputRef = useRef(null);
   const renameRef = useRef(null);
   const skipRenameBlur = useRef(false);
@@ -972,7 +982,15 @@ export function App() {
         const chunk = update?.content?.text || "";
         if (update?.sessionUpdate === "user_message_chunk" && compactHint(chunk) != null) return;
         if (!sid) return;
-        setThreads((prev) => ({ ...prev, [sid]: applyUpdate(prev[sid] || [], update) }));
+        setThreads((prev) => {
+          const list = applyUpdate(prev[sid] || [], update);
+          const start = turnStartRef.current[sid];
+          if (start) {
+            const last = [...list].reverse().find((item) => item.role === "assistant");
+            if (last && !last.startedAt && !last.endedAt) last.startedAt = start;
+          }
+          return { ...prev, [sid]: list };
+        });
       }
       if (event.type === "compact") {
         const payload = event.payload || {};
@@ -1048,6 +1066,49 @@ export function App() {
     return () => off();
   }, []);
 
+  useEffect(() => {
+    if (!appState.running) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [appState.running, appState.sessionId]);
+
+  useEffect(() => {
+    const next = new Set(appState.runningIds || []);
+    if (appState.running && appState.sessionId) next.add(appState.sessionId);
+    const prev = prevRunningRef.current;
+    for (const id of prev) {
+      if (next.has(id)) continue;
+      const started = turnStartRef.current[id];
+      const ended = Date.now();
+      setThreads((current) => {
+        const list = current[id];
+        if (!list?.length) return current;
+        const copy = list.map((item) => ({ ...item }));
+        let target = -1;
+        for (let i = copy.length - 1; i >= 0; i -= 1) {
+          if (copy[i].role !== "assistant") continue;
+          if (copy[i].endedAt) break;
+          if (copy[i].startedAt || started) {
+            target = i;
+            break;
+          }
+        }
+        if (target < 0) return current;
+        const startAt = copy[target].startedAt || started || ended;
+        copy[target] = {
+          ...copy[target],
+          startedAt: startAt,
+          endedAt: ended,
+          durationMs: Math.max(0, ended - startAt),
+        };
+        return { ...current, [id]: copy };
+      });
+      delete turnStartRef.current[id];
+    }
+    prevRunningRef.current = next;
+  }, [appState.running, appState.runningIds, appState.sessionId]);
+
   const pinToBottom = () => {
     const el = scroller.current;
     if (!el) return;
@@ -1090,8 +1151,12 @@ export function App() {
   }, [messages, appState.sessionId]);
 
   const project = folderName(appState.cwd);
-  const liveAssistantId = appState.running
-    ? [...messages].reverse().find((item) => item.role === "assistant")?.id
+  const liveAssistant = appState.running
+    ? [...messages].reverse().find((item) => item.role === "assistant" && item.startedAt && !item.endedAt)
+    : null;
+  const liveAssistantId = liveAssistant?.id || "";
+  const pendingDuration = appState.running
+    ? formatDuration(now - (turnStartRef.current[appState.sessionId] || now))
     : "";
   const projects = appState.projects?.length
     ? appState.projects
@@ -1528,6 +1593,7 @@ export function App() {
     const id = sid || item.sessionId || sessionIdRef.current;
     const cwd = item.cwd || cwdRef.current;
     setError("");
+    if (!item.compact && id) turnStartRef.current[id] = Date.now();
     if (item.compact) {
       if (id) setCompactPhases((prev) => ({ ...prev, [id]: "start" }));
       try {
@@ -2469,12 +2535,28 @@ export function App() {
                   </article>
                 ) : (
                   <article key={message.id} className="bubble assistant">
-                    <RunFold
-                      thought={message.thought}
-                      tools={message.tools}
-                      cwd={appState.cwd}
-                      running={message.id === liveAssistantId}
-                    />
+                    {(() => {
+                      const runningTurn = message.id === liveAssistantId;
+                      const duration = messageDuration(
+                        message,
+                        runningTurn,
+                        now,
+                        turnStartRef.current[appState.sessionId]
+                      );
+                      const folded = Boolean(String(message.thought || "").trim() || message.tools?.length);
+                      return (
+                        <>
+                          <RunFold
+                            thought={message.thought}
+                            tools={message.tools}
+                            cwd={appState.cwd}
+                            running={runningTurn}
+                            duration={duration}
+                          />
+                          {!folded && duration ? <div className="turn-time">{duration}</div> : null}
+                        </>
+                      );
+                    })()}
                     {message.images?.length ? (
                       <div className="pics">
                         {message.images.map((image, index) => (
@@ -2491,8 +2573,10 @@ export function App() {
                 )
               )}
 
-              {appState.running || compactPhase === "start" ? (
-                <div className="pulse">{compactPhase === "start" ? "正在压缩" : "正在处理"}</div>
+              {compactPhase === "start" ? (
+                <div className="pulse">正在压缩</div>
+              ) : appState.running && !liveAssistantId ? (
+                <div className="turn-time">{pendingDuration || "用时 0秒"}</div>
               ) : null}
             </div>
 

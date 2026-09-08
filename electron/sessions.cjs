@@ -845,6 +845,162 @@ function foldChatHistory(rows, dir) {
   return messages;
 }
 
+const TURNS_FILE = "halora-turns.jsonl";
+
+function parseTime(value) {
+  if (value == null || value === "") return 0;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 && value < 1e12 ? Math.round(value * 1000) : value;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function previewKey(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function readEventDurations(dir) {
+  const file = path.join(dir, "events.jsonl");
+  if (!fs.existsSync(file)) return { durations: [], open: false };
+  let raw = "";
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return { durations: [], open: false };
+  }
+  const durations = [];
+  let open = 0;
+  for (const line of raw.split(/\n/)) {
+    if (!line.includes("turn_started") && !line.includes("turn_ended")) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const ts = parseTime(row.ts);
+    if (!ts) continue;
+    if (row.type === "turn_started") {
+      if (open) durations.push(Math.max(0, ts - open));
+      open = ts;
+    } else if (row.type === "turn_ended" && open) {
+      durations.push(Math.max(0, ts - open));
+      open = 0;
+    }
+  }
+  return { durations, open: Boolean(open) };
+}
+
+function readRecordedDurations(dir) {
+  const file = path.join(dir, TURNS_FILE);
+  if (!fs.existsSync(file)) return [];
+  const rows = [];
+  for (const row of readJsonl(file)) {
+    const durationMs = Number(row?.durationMs);
+    if (!Number.isFinite(durationMs) || durationMs < 0) continue;
+    rows.push({
+      durationMs: Math.round(durationMs),
+      startedAt: Number(row.startedAt) || 0,
+      endedAt: Number(row.endedAt) || 0,
+      user: previewKey(row.user),
+    });
+  }
+  return rows;
+}
+
+function applyDuration(message, rec) {
+  if (!message || !rec) return;
+  const ms = Number(rec.durationMs);
+  if (!Number.isFinite(ms) || ms < 0) return;
+  message.durationMs = Math.round(ms);
+  if (rec.startedAt) message.startedAt = rec.startedAt;
+  if (rec.endedAt) message.endedAt = rec.endedAt;
+}
+
+function userMatches(message, key) {
+  if (!key) return false;
+  const text = previewKey(message?.text);
+  if (!text) return false;
+  return text.startsWith(key) || key.startsWith(text) || text.includes(key);
+}
+
+function attachTurnDurations(messages, dir) {
+  if (!messages?.length || !dir) return messages;
+  const recorded = readRecordedDurations(dir);
+  const { durations: inferred, open } = readEventDurations(dir);
+  if (!recorded.length && !inferred.length) return messages;
+
+  const used = new Set();
+  if (recorded.length) {
+    let cursor = 0;
+    for (const rec of recorded) {
+      let found = -1;
+      if (rec.user) {
+        for (let i = cursor; i < messages.length; i += 1) {
+          if (messages[i].role === "user" && userMatches(messages[i], rec.user)) {
+            found = i;
+            break;
+          }
+        }
+      }
+      if (found < 0) continue;
+      cursor = found + 1;
+      for (let j = found + 1; j < messages.length; j += 1) {
+        if (messages[j].role === "assistant") {
+          applyDuration(messages[j], rec);
+          used.add(j);
+          break;
+        }
+      }
+    }
+    if (!used.size) {
+      let ri = recorded.length - 1;
+      for (let i = messages.length - 1; i >= 0 && ri >= 0; i -= 1) {
+        if (messages[i].role !== "assistant") continue;
+        applyDuration(messages[i], recorded[ri]);
+        used.add(i);
+        ri -= 1;
+      }
+    }
+  }
+
+  const targets = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i].role === "assistant" && messages[i].durationMs == null) targets.push(i);
+  }
+  if (open && messages[messages.length - 1]?.role === "assistant" && targets.length) {
+    targets.pop();
+  }
+  let di = inferred.length - 1 - used.size;
+  for (let t = targets.length - 1; t >= 0 && di >= 0; t -= 1, di -= 1) {
+    applyDuration(messages[targets[t]], { durationMs: inferred[di] });
+  }
+  return messages;
+}
+
+function recordTurnDuration(cwd, sessionId, turn) {
+  const dir = sessionDir(cwd, sessionId);
+  if (!dir) return false;
+  const ms = Number(turn?.durationMs);
+  if (!Number.isFinite(ms) || ms < 0) return false;
+  const row = {
+    startedAt: Number(turn.startedAt) || 0,
+    endedAt: Number(turn.endedAt) || Date.now(),
+    durationMs: Math.round(ms),
+    user: previewKey(turn.user),
+  };
+  try {
+    fs.appendFileSync(path.join(dir, TURNS_FILE), `${JSON.stringify(row)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readTranscript(cwd, sessionId) {
   const dir = sessionDir(cwd, sessionId);
   if (!dir) return [];
@@ -854,9 +1010,9 @@ function readTranscript(cwd, sessionId) {
     for (const msg of foldChatHistory(readJsonl(historyFile), dir)) {
       pushUniqueMessage(messages, msg);
     }
-    return messages;
+    return attachTurnDurations(messages, dir);
   }
-  if (messages.length) return messages;
+  if (messages.length) return attachTurnDurations(messages, dir);
   const file = path.join(dir, "updates.jsonl");
   if (!fs.existsSync(file)) return [];
   const updates = [];
@@ -874,7 +1030,7 @@ function readTranscript(cwd, sessionId) {
       updates.push(update);
     }
   }
-  return foldUpdates(updates);
+  return attachTurnDurations(foldUpdates(updates), dir);
 }
 
 function renameSession(cwd, sessionId, title) {
@@ -927,4 +1083,7 @@ module.exports = {
   samePath,
   canonicalCwd,
   lookupOrder,
+  recordTurnDuration,
+  attachTurnDurations,
+  readEventDurations,
 };

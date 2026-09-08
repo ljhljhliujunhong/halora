@@ -16,6 +16,7 @@ const {
   samePath,
   canonicalCwd,
   lookupOrder,
+  recordTurnDuration,
 } = require("./sessions.cjs");
 const { buildContext, rememberCompaction } = require("./context.cjs");
 const { fetchQuota } = require("./billing.cjs");
@@ -86,17 +87,43 @@ function noticeSessionId(params) {
   return params?.sessionId || loadingId || state.sessionId;
 }
 
-function beginTurn(id, cwd) {
+function beginTurn(id, cwd, opts = {}) {
   const slot = liveSlot(id, cwd);
   slot.gen += 1;
   slot.running = true;
+  slot.turnStartedAt = Date.now();
+  slot.compactTurn = Boolean(opts.compact);
+  slot.gotUpdate = false;
+  slot.turnUser = String(opts.user || "").slice(0, 200);
   return slot.gen;
+}
+
+function stampTurn(id) {
+  const slot = live.get(id);
+  if (!slot?.turnStartedAt || slot.compactTurn) {
+    if (slot) slot.turnStartedAt = 0;
+    return;
+  }
+  const startedAt = slot.turnStartedAt;
+  const user = slot.turnUser;
+  slot.turnStartedAt = 0;
+  slot.turnUser = "";
+  if (!slot.gotUpdate) return;
+  const endedAt = Date.now();
+  recordTurnDuration(slot.cwd, id, {
+    startedAt,
+    endedAt,
+    durationMs: Math.max(0, endedAt - startedAt),
+    user,
+  });
 }
 
 function endTurn(id, gen) {
   const slot = live.get(id);
   if (!slot || slot.gen !== gen) return false;
+  stampTurn(id);
   slot.running = false;
+  slot.compactTurn = false;
   return true;
 }
 
@@ -104,8 +131,10 @@ function cancelLive(id) {
   if (!id) return;
   const slot = live.get(id);
   if (slot) {
+    stampTurn(id);
     slot.gen += 1;
     slot.running = false;
+    slot.compactTurn = false;
   }
   try {
     acp.cancel(id);
@@ -596,6 +625,8 @@ acp.on("notification", (method, params) => {
       handleSessionNotice(params);
       return;
     }
+    const slot = live.get(sessionId);
+    if (slot?.running) slot.gotUpdate = true;
     send("update", { sessionId, update });
     return;
   }
@@ -938,7 +969,7 @@ ipcMain.handle("compact", async (_event, payload) => {
   if (!cwd) throw new Error("先打开一个文件夹");
   if (!sessionId) throw new Error("先打开一次对话");
   await attachSession(sessionId, cwd).catch(() => {});
-  const gen = beginTurn(sessionId, cwd);
+  const gen = beginTurn(sessionId, cwd, { compact: true });
   send("compact", { sessionId, phase: "start" });
   send("state", snapshot());
   try {
@@ -997,7 +1028,7 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
   setTimeout(applyAuto, 900);
   refreshSessions();
   watchSessions();
-  const gen = beginTurn(sessionId, cwd);
+  const gen = beginTurn(sessionId, cwd, { user: rawText });
   send("state", snapshot());
   try {
     try {
