@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store
+release/
+build/*.png
+build/*.ico
+build/ico-frames/
+*.exe
+.env
+.grok/
+*.local
