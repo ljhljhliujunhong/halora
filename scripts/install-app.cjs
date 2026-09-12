@@ -24,7 +24,7 @@ function copyApp() {
   const robocopy = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'robocopy.exe');
   const result = run(robocopy, [source, dest, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np', '/R:1', '/W:1']);
   if (result.status >= 8) {
-    console.warn('halora-app 正在使用，新版本已放在 release/win-unpacked。退出星环后再打开即可。');
+    console.warn(`halora-app 正在使用，新版本已放在 ${source}。退出星环后再打开即可。`);
     return;
   }
   if (!fs.existsSync(path.join(dest, 'Halora.exe'))) throw new Error('复制后找不到 Halora.exe');

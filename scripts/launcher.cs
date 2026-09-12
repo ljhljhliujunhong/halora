@@ -32,9 +32,25 @@ internal static class Program
 
     static IEnumerable<string> Candidates(string baseDir)
     {
-        yield return Path.Combine(baseDir, "halora-app", "Halora.exe");
-        yield return Path.Combine(baseDir, "release", "win-unpacked", "Halora.exe");
-        yield return Path.Combine(baseDir, "Halora.exe");
+        var paths = new List<string>
+        {
+            Path.Combine(baseDir, "halora-app", "Halora.exe"),
+            Path.Combine(baseDir, "pack-out", "win-unpacked", "Halora.exe"),
+            Path.Combine(baseDir, "release", "win-unpacked", "Halora.exe"),
+            Path.Combine(baseDir, "Halora.exe"),
+        };
+        paths.Sort((a, b) =>
+        {
+            DateTime ta = File.Exists(a) ? File.GetLastWriteTimeUtc(a) : DateTime.MinValue;
+            DateTime tb = File.Exists(b) ? File.GetLastWriteTimeUtc(b) : DateTime.MinValue;
+            int cmp = tb.CompareTo(ta);
+            if (cmp != 0) return cmp;
+            bool aHome = a.IndexOf("halora-app", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool bHome = b.IndexOf("halora-app", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (aHome == bHome) return 0;
+            return aHome ? -1 : 1;
+        });
+        foreach (string path in paths) yield return path;
     }
 
     static void StartApp(string app)

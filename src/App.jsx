@@ -979,6 +979,8 @@ export function App() {
   const scroller = useRef(null);
   const stickBottom = useRef(true);
   const pinLock = useRef(0);
+  const parkedRef = useRef(false);
+  const scrollPos = useRef(0);
   const sessionIdRef = useRef(null);
   const cwdRef = useRef(null);
   const draftsRef = useRef({});
@@ -1228,6 +1230,30 @@ export function App() {
     el.scrollTop = el.scrollHeight;
   };
 
+  const saveThreadScroll = () => {
+    const el = scroller.current;
+    if (el && !parkedRef.current) scrollPos.current = el.scrollTop;
+  };
+
+  const openWorkbench = (page) => {
+    saveThreadScroll();
+    setShowSkills(false);
+    setWorkbenchPage(page);
+  };
+
+  const closeWorkbench = () => setWorkbenchPage("");
+
+  const paneParked = Boolean(workbenchPage) || showSkills;
+  parkedRef.current = paneParked;
+
+  useLayoutEffect(() => {
+    if (paneParked) return;
+    const el = scroller.current;
+    if (!el) return;
+    if (stickBottom.current) pinToBottom();
+    else el.scrollTop = scrollPos.current;
+  }, [paneParked]);
+
   useLayoutEffect(() => {
     if (!stickBottom.current) return;
     pinToBottom();
@@ -1242,7 +1268,7 @@ export function App() {
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => {
-            if (stickBottom.current) pinToBottom();
+            if (!parkedRef.current && stickBottom.current) pinToBottom();
           });
     if (ro) {
       ro.observe(el);
@@ -1900,7 +1926,11 @@ export function App() {
         compactChat(parsed.rest);
         return;
       }
-      if (cmd?.name === 'rewind') { setDraft(''); setWorkbenchPage('checkpoints'); return; }
+      if (cmd?.name === "rewind") {
+        setDraft("");
+        openWorkbench("checkpoints");
+        return;
+      }
     }
     const item = takeComposer(override);
     if (!item) return;
@@ -2591,12 +2621,16 @@ export function App() {
             );
           })}
         </div>
-        <nav className="side-tools" aria-label="工作区工具">{[['review', '改动审查'], ['checkpoints', '检查点'], ['archives', '导出备份'], ['settings', '设置']].map(([key, label]) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => { setWorkbenchPage(key); setShowSkills(false); }}>{label}</button>)}</nav>
+        <nav className="side-tools" aria-label="工作区工具">{[['review', '改动审查'], ['checkpoints', '检查点'], ['archives', '导出备份'], ['settings', '设置']].map(([key, label]) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => openWorkbench(key)}>{label}</button>)}</nav>
         <div className="side-foot">
           <button
             type="button"
             className={`side-skills ${showSkills ? "active" : ""}`}
-            onClick={() => { setWorkbenchPage(''); setShowSkills((open) => !open); }}
+            onClick={() => {
+              if (!showSkills) saveThreadScroll();
+              setWorkbenchPage("");
+              setShowSkills((open) => !open);
+            }}
             title="技能"
             aria-label="技能"
           >
@@ -2618,7 +2652,8 @@ export function App() {
       <main className="main" onContextMenu={onResourceMenu}>
         {appState.connection === 'disconnected' && <div className="recovery-bar"><span>{appState.everReady ? 'Grok 连接已断开，已保存当前对话。' : appState.grokFound ? '还没连上 Grok。' : '还没找到 Grok Build。'}</span><button className="btn ghost" onClick={() => api.reconnect().then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>重新连接</button></div>}
         {(appState.interrupted || []).map(turn => <div className="recovery-bar" key={turn.id}><span>上次任务中断：{turn.prompt?.slice(0, 60) || (turn.compact ? '压缩对话' : '执行任务')}</span><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); }}>查看对话</button><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); setDraft('请检查上次任务的执行进度，继续完成尚未完成的部分。'); inputRef.current?.focus(); }}>准备继续</button><button className="btn ghost" onClick={() => api.dismissRecovery(turn.id).then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>忽略</button></div>)}
-        {workbenchPage ? <Workbench key={`${workbenchPage}:${appState.cwd}:${appState.sessionId}`} page={workbenchPage} state={appState} onState={next => setAppState(p => ({ ...p, ...next }))} onClose={() => setWorkbenchPage('')} /> : showSkills ? (
+        {workbenchPage ? <Workbench key={`${workbenchPage}:${appState.cwd}:${appState.sessionId}`} page={workbenchPage} state={appState} onState={next => setAppState(p => ({ ...p, ...next }))} onClose={closeWorkbench} /> : null}
+        {showSkills && !workbenchPage ? (
           <section className="skills-page">
             <div className="skills-head">
               <h1>技能</h1>
@@ -2683,8 +2718,8 @@ export function App() {
               </div>
             )}
           </section>
-        ) : (
-          <>
+        ) : null}
+        <div className={paneParked ? "chat-pane is-parked" : "chat-pane"} aria-hidden={paneParked || undefined}>
         <header className="top">
           <div className="crumb">{appState.cwd || "选择一个项目"}</div>
           {headerRight}
@@ -2709,8 +2744,9 @@ export function App() {
               className="thread"
               ref={scroller}
               onScroll={(event) => {
-                if (Date.now() < pinLock.current) return;
+                if (parkedRef.current || Date.now() < pinLock.current) return;
                 const el = event.currentTarget;
+                if (el.clientHeight < 32) return;
                 stickBottom.current =
                   el.scrollHeight - el.scrollTop - el.clientHeight < 96;
               }}
@@ -3098,8 +3134,7 @@ export function App() {
             </form>
           </>
         )}
-          </>
-        )}
+        </div>
       </main>
 
       {menu ? (
