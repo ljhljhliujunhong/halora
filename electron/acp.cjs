@@ -10,6 +10,9 @@ class AcpClient extends EventEmitter {
     this.proc = null;
     this.nextId = 0;
     this.pending = new Map();
+    this.draining = new Map();
+    this.idleMs = 5 * 60 * 1000;
+    this.cancelGraceMs = 5000;
   }
 
   get alive() {
@@ -50,6 +53,8 @@ class AcpClient extends EventEmitter {
   }
 
   stop() {
+    for (const finish of this.draining.values()) finish();
+    this.draining.clear();
     if (!this.proc) return;
     const proc = this.proc;
     this.proc = null;
@@ -81,6 +86,9 @@ class AcpClient extends EventEmitter {
     }
 
     if (msg.method) {
+      for (const item of this.pending.values()) {
+        if (item.sessionId === msg.params?.sessionId) item.touch?.();
+      }
       this.emit("notification", msg.method, msg.params || {});
       return;
     }
@@ -94,10 +102,12 @@ class AcpClient extends EventEmitter {
         item.resolve(msg.result);
       }
     }
+    if (msg.id != null) this.draining.get(msg.id)?.();
   }
 
   handleIncoming(msg) {
     if (msg.method === "session/request_permission") {
+      for (const item of this.pending.values()) if (item.sessionId === msg.params?.sessionId) item.touch?.(30 * 60 * 1000);
       this.emit("permission", { requestId: msg.id, params: msg.params || {} });
       return;
     }
@@ -109,20 +119,24 @@ class AcpClient extends EventEmitter {
     this.proc.stdin.write(JSON.stringify(obj) + "\n");
   }
 
-  request(method, params, { timeoutMs } = {}) {
+  request(method, params, { timeoutMs, idle = false } = {}) {
     const id = ++this.nextId;
     this.send({ jsonrpc: "2.0", id, method, params });
     return new Promise((resolve, reject) => {
-      const timer =
-        timeoutMs && timeoutMs > 0
-          ? setTimeout(() => {
+      let timer;
+      const touch = (ms = timeoutMs) => {
+        clearTimeout(timer);
+        if (ms > 0) timer = setTimeout(() => {
               if (this.pending.has(id)) {
                 this.pending.delete(id);
                 reject(new Error(`${method} 超时`));
+                if (idle) { this.stop(); this.emit('exit', 'timeout'); }
               }
-            }, timeoutMs)
-          : null;
+            }, ms);
+      };
+      touch();
       this.pending.set(id, {
+        sessionId: params?.sessionId, method, touch: idle ? touch : null,
         resolve: (value) => {
           if (timer) clearTimeout(timer);
           resolve(value);
@@ -181,7 +195,8 @@ class AcpClient extends EventEmitter {
     return this.request("session/set_model", { sessionId, modelId }, { timeoutMs: 10000 });
   }
 
-  prompt(sessionId, text, images = [], files = []) {
+  async prompt(sessionId, text, images = [], files = []) {
+    await Promise.all([...this.draining.values()].filter(f => f.sessionId === sessionId).map(f => f.done));
     const blocks = [];
     const trimmed = String(text || "").trim();
     if (trimmed) blocks.push({ type: "text", text: trimmed });
@@ -202,7 +217,7 @@ class AcpClient extends EventEmitter {
       });
     }
     if (!blocks.length) throw new Error("先写点什么，或加一张图");
-    return this.request("session/prompt", { sessionId, prompt: blocks });
+    return this.request("session/prompt", { sessionId, prompt: blocks }, { timeoutMs: this.idleMs, idle: true });
   }
 
   compact(sessionId, hint) {
@@ -216,6 +231,17 @@ class AcpClient extends EventEmitter {
       method: "session/cancel",
       params: { sessionId },
     });
+    for (const [id, item] of this.pending) {
+      if (item.sessionId !== sessionId || item.method !== 'session/prompt') continue;
+      this.pending.delete(id);
+      item.reject(new Error('任务已取消'));
+      let resolve;
+      const done = new Promise(r => { resolve = r; });
+      const finish = () => { clearTimeout(timer); this.draining.delete(id); resolve(); this.emit('settled', sessionId); };
+      finish.done = done; finish.sessionId = sessionId;
+      const timer = setTimeout(() => { this.stop(); this.emit('exit', 'cancel-timeout'); }, this.cancelGraceMs);
+      this.draining.set(id, finish);
+    }
   }
 }
 

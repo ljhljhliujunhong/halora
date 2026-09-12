@@ -13,3 +13,4 @@ build/ico-frames/
 .env
 .grok/
 *.local
+.halora-update.json*

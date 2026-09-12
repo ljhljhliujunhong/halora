@@ -161,6 +161,16 @@ function mainHarness(options = {}) {
   return { ...h, handlers, events };
 }
 
+test('theme changes do not require writable Grok config and threshold failure preserves local preferences', async () => {
+  const h = mainHarness(); h.saveSettings({ autoCompact: 85 });
+  const config = path.join(process.env.GROK_HOME, 'config.toml');
+  fs.mkdirSync(config, { recursive: true });
+  const result = await h.handlers.get('save-preferences')(null, { theme: 'dark', autoCompact: 85 });
+  assert.equal(result.preferences.theme, 'dark'); assert.equal(result.settingsWarning, '');
+  const next = await h.handlers.get('save-preferences')(null, { fontSize: 16, autoCompact: 80 });
+  assert.equal(next.preferences.fontSize, 16); assert.equal(next.preferences.autoCompact, 80); assert.match(next.settingsWarning, /写入失败/);
+});
+
 test("compact IPC handles vendor channel and survives refresh/load/send", async () => {
   const f = fixture("integration", "compact");
   const h = mainHarness();

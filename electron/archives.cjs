@@ -18,7 +18,7 @@ function collect(root, prefix, files, budget, skip = new Set()) {
     }
   }
 }
-function createBackup(dataRoot, grokRoot, destination) {
+function createBackup(dataRoot, grokRoot, destination, password = '') {
   const files = [], budget = { bytes: 0 };
   for (const name of ['settings.json', 'recovery.json', 'composer.json']) {
     const file = path.join(dataRoot, name);
@@ -28,29 +28,46 @@ function createBackup(dataRoot, grokRoot, destination) {
   collect(path.join(grokRoot, 'skills'), 'skills', files, budget, new Set(['.git', 'node_modules']));
   collect(path.join(dataRoot, 'inbox'), 'app/inbox', files, budget);
   collect(path.join(dataRoot, 'checkpoints'), 'app/checkpoints', files, budget);
+  collect(path.join(dataRoot, 'rewind-backups'), 'app/rewind-backups', files, budget);
   const raw = Buffer.from(JSON.stringify({ format: 'halora-backup', version: 1, at: new Date().toISOString(), sourceDataRoot: dataRoot, files }));
   if (raw.length > LIMIT * 1.5) throw new Error('备份体积过大');
-  atomicWrite(destination, zlib.gzipSync(raw));
+  let output = zlib.gzipSync(raw);
+  if (password) {
+    const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', crypto.scryptSync(password, salt, 32), iv);
+    const encrypted = Buffer.concat([cipher.update(output), cipher.final()]);
+    output = Buffer.concat([Buffer.from('HALORA01'), salt, iv, cipher.getAuthTag(), encrypted]);
+  }
+  atomicWrite(destination, output);
   return { path: destination, count: files.length, bytes: fs.statSync(destination).size };
 }
-function parseBackup(file) {
+function parseBackup(file, password = '') {
   if (fs.statSync(file).size > LIMIT) throw new Error('备份文件过大');
   const bytes = fs.readFileSync(file);
-  const raw = zlib.gunzipSync(bytes, { maxOutputLength: LIMIT * 1.5 });
+  let compressed = bytes;
+  if (bytes.subarray(0, 8).toString() === 'HALORA01') {
+    if (!password) throw new Error('此备份需要密码');
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', crypto.scryptSync(password, bytes.subarray(8, 24), 32), bytes.subarray(24, 36));
+      decipher.setAuthTag(bytes.subarray(36, 52));
+      compressed = Buffer.concat([decipher.update(bytes.subarray(52)), decipher.final()]);
+    } catch { throw new Error('密码错误或备份已损坏'); }
+  }
+  const raw = zlib.gunzipSync(compressed, { maxOutputLength: LIMIT * 1.5 });
   const bundle = JSON.parse(raw.toString('utf8'));
   if (bundle.format !== 'halora-backup' || bundle.version !== 1 || !Array.isArray(bundle.files) || bundle.files.length > 30000) throw new Error('不支持的备份格式');
   const seen = new Set(); let size = 0;
   for (const row of bundle.files) {
     if (typeof row.path !== 'string' || typeof row.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(row.data)) throw new Error('备份内容无效');
-    if (!/^(sessions\/|skills\/|app\/(settings\.json$|recovery\.json$|composer\.json$|inbox\/|checkpoints\/))/.test(row.path)) throw new Error('备份包含非允许文件');
+    if (!/^(sessions\/|skills\/|app\/(settings\.json$|recovery\.json$|composer\.json$|inbox\/|checkpoints\/|rewind-backups\/))/.test(row.path)) throw new Error('备份包含非允许文件');
     safePath(path.join(path.dirname(path.resolve(file)), 'validation'), row.path);
     const key = row.path.toLowerCase(); if (seen.has(key)) throw new Error('备份包含重复路径'); seen.add(key);
     size += Buffer.byteLength(row.data, 'base64'); if (size > LIMIT) throw new Error('备份内容过大');
   }
   return { ...bundle, fingerprint: crypto.createHash('sha256').update(bytes).digest('hex') };
 }
-function restoreBackup(dataRoot, grokRoot, source, fingerprint) {
-  const bundle = parseBackup(source);
+function restoreBackup(dataRoot, grokRoot, source, fingerprint, password = '') {
+  const bundle = parseBackup(source, password);
   if (bundle.fingerprint !== fingerprint) throw new Error('备份文件已改变，请重新选择');
   const entries = bundle.files.map(row => {
     const root = row.path.startsWith('app/') ? dataRoot : grokRoot;
@@ -58,7 +75,7 @@ function restoreBackup(dataRoot, grokRoot, source, fingerprint) {
     return { target: safePath(root, name), data: Buffer.from(row.data, 'base64') };
   });
   const backup = path.join(dataRoot, 'backups', `before-restore-${Date.now()}.halora`);
-  createBackup(dataRoot, grokRoot, backup);
+  createBackup(dataRoot, grokRoot, backup, password);
   // Keep the currently installed identity and rebase inbox paths on this machine.
   for (const entry of entries) {
     if (entry.target === path.join(dataRoot, 'composer.json') && bundle.sourceDataRoot) {

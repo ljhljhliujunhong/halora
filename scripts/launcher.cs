@@ -1,7 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
+using System.Collections.Generic;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 internal static class Program
@@ -9,60 +11,30 @@ internal static class Program
     [STAThread]
     static void Main()
     {
-        string self = Path.GetFullPath(Application.ExecutablePath);
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-
-        foreach (string candidate in Candidates(baseDir))
+        string root = AppDomain.CurrentDomain.BaseDirectory;
+        string marker = Path.Combine(root, ".halora-update.json");
+        if (File.Exists(marker))
         {
-            try
-            {
-                if (!File.Exists(candidate)) continue;
-                string full = Path.GetFullPath(candidate);
-                if (string.Equals(full, self, StringComparison.OrdinalIgnoreCase)) continue;
-                StartApp(full);
-                return;
-            }
-            catch
-            {
-            }
+            try {
+                var tx = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(marker));
+                var helper = new ProcessStartInfo((string)tx["node"], "\"" + (string)tx["helper"] + "\" \"" + marker + "\"") { UseShellExecute = false, CreateNoWindow = true };
+                helper.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
+                Process.Start(helper);
+                for (int i = 0; i < 100 && File.Exists(marker); i++) Thread.Sleep(100);
+                if (File.Exists(marker)) {
+                    string error = marker + ".error";
+                    MessageBox.Show(File.Exists(error) ? "更新尚未完成：" + File.ReadAllText(error) : "更新已准备好，请先退出所有 Halora 窗口。退出后会自动安装，再打开即可。", "Halora");
+                    return;
+                }
+            } catch (Exception error) { MessageBox.Show("无法完成更新：" + error.Message, "Halora"); return; }
         }
-
-        MessageBox.Show("还没有打包。先在项目目录运行 npm run pack。", "星环");
-    }
-
-    static IEnumerable<string> Candidates(string baseDir)
-    {
-        var paths = new List<string>
-        {
-            Path.Combine(baseDir, "halora-app", "Halora.exe"),
-            Path.Combine(baseDir, "pack-out", "win-unpacked", "Halora.exe"),
-            Path.Combine(baseDir, "release", "win-unpacked", "Halora.exe"),
-            Path.Combine(baseDir, "Halora.exe"),
-        };
-        paths.Sort((a, b) =>
-        {
-            DateTime ta = File.Exists(a) ? File.GetLastWriteTimeUtc(a) : DateTime.MinValue;
-            DateTime tb = File.Exists(b) ? File.GetLastWriteTimeUtc(b) : DateTime.MinValue;
-            int cmp = tb.CompareTo(ta);
-            if (cmp != 0) return cmp;
-            bool aHome = a.IndexOf("halora-app", StringComparison.OrdinalIgnoreCase) >= 0;
-            bool bHome = b.IndexOf("halora-app", StringComparison.OrdinalIgnoreCase) >= 0;
-            if (aHome == bHome) return 0;
-            return aHome ? -1 : 1;
-        });
-        foreach (string path in paths) yield return path;
-    }
-
-    static void StartApp(string app)
-    {
-        ProcessStartInfo psi = new ProcessStartInfo
-        {
-            FileName = app,
-            WorkingDirectory = Path.GetDirectoryName(app),
-            UseShellExecute = false
-        };
-        psi.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
-        psi.EnvironmentVariables.Remove("SMOKE_TEST");
-        Process.Start(psi);
+        string app = Path.Combine(root, "halora-app", "Halora.exe");
+        if (!File.Exists(app)) { MessageBox.Show("还没有安装 Halora，请运行 npm run pack。", "Halora"); return; }
+        try {
+            var start = new ProcessStartInfo(app) { WorkingDirectory = Path.GetDirectoryName(app), UseShellExecute = false };
+            start.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
+            start.EnvironmentVariables.Remove("SMOKE_TEST");
+            Process.Start(start);
+        } catch (Exception error) { MessageBox.Show(error.Message, "Halora"); }
     }
 }

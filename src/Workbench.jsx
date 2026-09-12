@@ -32,14 +32,19 @@ export function Workbench({ page, state, onState, onClose }) {
   const [backup, setBackup] = useState(null);
   const [format, setFormat] = useState('md');
   const [grokUpdate, setGrokUpdate] = useState(null);
+  const [storage, setStorage] = useState(null);
+  const [backupPassword, setBackupPassword] = useState('');
+  const [restorePassword, setRestorePassword] = useState('');
+  const actionLock = useRef(false);
   const request = useRef(0);
   const cwd = state.cwd;
   const projectRunning = (state.projects || []).find(p => p.cwd === cwd)?.sessions.some(s => (state.runningIds || []).includes(s.id));
   const act = async fn => {
-    if (busy) return;
+    if (actionLock.current) return;
+    actionLock.current = true;
     setBusy(true); setError(''); setResult(null);
     try { return await fn(); } catch (e) { setError(String(e.message || e).replace(/^Error invoking remote method '[^']+': Error: /, '')); }
-    finally { setBusy(false); }
+    finally { actionLock.current = false; setBusy(false); }
   };
   const load = async () => {
     if (page === 'review' && cwd) { const next = await api.review(cwd); setReview(next); setSelected(''); setPatch(null); }
@@ -52,7 +57,23 @@ export function Workbench({ page, state, onState, onClose }) {
       }
     }
   };
-  useEffect(() => { act(load); }, [page, cwd, state.sessionId]);
+  useEffect(() => {
+    // Page reads are independent of mutation busy state; stale requests cannot
+    // overwrite the newly selected project/page.
+    let active = true;
+    setReview(null); setCheckpoints([]); setPoints([]); setRestore(null); setSelected(''); setPatch(null);
+    const read = async () => {
+      try {
+        if (page === 'review' && cwd) { const next = await api.review(cwd); if (active) setReview(next); }
+        if (page === 'checkpoints' && cwd) {
+          const next = await api.checkpoints(cwd); if (active) setCheckpoints(next);
+          if (state.sessionId) try { const nextPoints = await api.rewindPoints({ cwd, sessionId: state.sessionId }); if (active) setPoints(nextPoints); }
+          catch (e) { if (active) setPointError(e.message); }
+        }
+      } catch (e) { if (active) setError(e.message); }
+    };
+    read(); return () => { active = false; };
+  }, [page, cwd, state.sessionId]);
   const preferencesKey = JSON.stringify(state.preferences || {});
   useEffect(() => { setPrefs(state.preferences || {}); }, [preferencesKey]);
   useEffect(() => {
@@ -78,6 +99,7 @@ export function Workbench({ page, state, onState, onClose }) {
       <label>发送快捷键<select value={prefs.sendKey || 'enter'} onChange={e => field('sendKey', e.target.value)}><option value="enter">Enter</option><option value="ctrl-enter">Ctrl + Enter</option></select></label>
       <label>默认项目<div className="wb-actions"><input value={prefs.defaultCwd || ''} onChange={e => field('defaultCwd', e.target.value)} /><button type="button" className="btn ghost" onClick={() => act(async () => { const dir = await api.pickFolder(); if (dir) field('defaultCwd', dir); })}>选择</button></div></label>
       <h2>外观</h2>
+      {state.settingsWarning && <p role="alert">{state.settingsWarning}</p>}
       <label>主题<select value={prefs.theme || 'light'} onChange={e => field('theme', e.target.value)}><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select></label>
       <label>字号 <span><input type="number" min="12" max="20" value={prefs.fontSize ?? 14} onChange={e => field('fontSize', Number(e.target.value))} /> px</span></label>
       <h2>恢复</h2>
@@ -85,7 +107,10 @@ export function Workbench({ page, state, onState, onClose }) {
       <label>发送前建立文件检查点<input type="checkbox" checked={prefs.checkpoints !== false} onChange={e => field('checkpoints', e.target.checked)} /></label>
       <h2>更新</h2>
       <label>Grok Build<div className="wb-actions">{grokUpdate && <span>{grokUpdate.available ? `${grokUpdate.current} → ${grokUpdate.latest}` : `${grokUpdate.current} · 已是最新`}</span>}<button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setGrokUpdate(await api.grokCheckUpdate()))}>检查更新</button>{grokUpdate?.available && <button type="button" className="btn primary" disabled={busy} onClick={() => act(async () => { const info = await api.grokInstallUpdate(); if (!info) return; setGrokUpdate(info); if (!info.relaunched) setResult({ text: 'Grok Build 已更新', relaunch: true }); })}>更新</button>}</div></label>
-      <div className="wb-actions"><button className="btn primary" disabled={busy}>保存设置</button><span>Halora · 星环</span></div>
+      <h2>存储与诊断</h2>
+      <div className="wb-actions"><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setStorage(await api.storageInspect()))}>查看存储</button><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setResult(await api.exportDiagnostics()))}>导出诊断日志</button></div>
+      {storage && <div>{storage.usage.map(row => <p key={row.name}>{({checkpoints:'检查点',inbox:'附件',backups:'恢复备份','rewind-backups':'回退备份',trash:'已删除对话',logs:'日志'})[row.name]} · {(row.bytes / 1048576).toFixed(1)} MB</p>)}<button type="button" className="btn ghost" disabled={busy || !storage.removable.length} onClick={() => act(async () => setStorage(await api.storageCleanup(storage.removable.map(row => row.path))))}>清理过期数据 · {storage.removable.length} 项</button></div>}
+      <div className="wb-actions"><button className="btn primary" disabled={busy}>保存设置</button><span>Halora · 星环 {state.version}</span></div>
     </form>}
     {page === 'review' && (!cwd ? <p>先打开一个项目。</p> : review && <>
       <div className="wb-strip"><span>{remoteLine(review)}</span><span>{review.files.length} 个改动文件</span>{projectRunning && <span>项目正在运行</span>}</div>
@@ -100,15 +125,15 @@ export function Workbench({ page, state, onState, onClose }) {
       <h2>项目文件</h2><form className="wb-commit" onSubmit={e => { e.preventDefault(); act(async () => { await api.createCheckpoint({ cwd, label }); setLabel(''); await load(); }); }}><input aria-label="检查点名称" placeholder="检查点名称" value={label} onChange={e => setLabel(e.target.value)} /><button className="btn primary" disabled={busy || projectRunning}>建立检查点</button></form>
       {state.checkpointWarning && <p className="wb-error">{state.checkpointWarning}</p>}
       {checkpoints.length === 0 && <p>还没有文件检查点。</p>}
-      <div className="wb-records">{checkpoints.map(c => <article key={c.id}><div><b>{c.label}</b><small>{when(c.at)} · {c.count} 个文件</small></div><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => setRestore(await api.previewRestore({ cwd, id: c.id })))}>预览恢复</button></article>)}</div>
+      <div className="wb-records">{checkpoints.map(c => <article key={c.id}><div><b>{c.label}</b><small>{when(c.at)} · {c.count} 个文件</small></div><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => setRestore(await api.previewRestore({ cwd, id: c.id })))}>预览恢复</button><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => {setCheckpoints(await api.deleteCheckpoint({cwd,id:c.id})); setRestore(null);})}>删除</button></article>)}</div>
       {restore && <div className="wb-restore"><h3>恢复「{restore.label}」</h3>{restore.files.length ? <ul>{restore.files.map(f => <li key={f.path}><b>{f.action}</b> {f.path}</li>)}</ul> : <p>文件内容一致。</p>}<button className="btn danger" disabled={busy || projectRunning || !restore.files.length} onClick={() => act(async () => { const r = await api.restoreCheckpoint({ cwd, ...restore }); if (!r.canceled) { await load(); } })}>恢复这些文件</button></div>}
       <h2>对话回退</h2>{pointError && <p className="wb-error">{pointError}</p>}{!state.sessionId ? <p>先打开一次对话。</p> : !points.length && !pointError ? <p>当前对话还没有回退点。</p> : null}
       <div className="wb-records">{points.map(p => <article key={p.index}><div><b>{String(p.label)}</b><small>{p.at ? when(p.at) : `第 ${p.index + 1} 轮`}</small></div><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => { const r = await api.rewindExecute({ cwd, sessionId: state.sessionId, index: p.index }); if (!r.canceled) { setResult(r); await load(); } })}>回到此处</button></article>)}</div>
     </>)}
     {page === 'archives' && <div className="wb-settings">
       <h2>导出当前对话</h2><label>格式<select value={format} onChange={e => setFormat(e.target.value)}><option value="md">Markdown</option><option value="json">JSON</option><option value="html">HTML</option></select></label><button className="btn primary" disabled={busy || !state.sessionId || state.running} onClick={() => act(async () => setResult(await api.exportChat({ cwd, sessionId: state.sessionId, format })))}>导出对话</button>
-      <h2>数据备份</h2><p>包含对话、技能、设置、草稿和文件检查点。登录凭据及检查点之外的项目文件不在备份中。</p><button className="btn primary" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => setResult(await api.backupCreate()))}>创建备份</button>
-      <h2>恢复备份</h2><button className="btn ghost" disabled={busy} onClick={() => act(async () => setBackup(await api.backupInspect()))}>选择备份</button>{backup && <div className="wb-restore"><p>{backup.path}</p><p>{when(backup.at)} · {backup.count} 个文件</p><button className="btn danger" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => setResult(await api.backupRestore()))}>恢复并重启</button></div>}
+      <h2>数据备份</h2><label>加密密码（可选）<input type="password" autoComplete="new-password" value={backupPassword} onChange={e => setBackupPassword(e.target.value)} /></label><button className="btn primary" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => {setResult(await api.backupCreate(backupPassword)); setBackupPassword('');})}>{backupPassword ? '创建加密备份' : '创建未加密备份'}</button>
+      <h2>恢复备份</h2><label>备份密码<input type="password" autoComplete="off" value={restorePassword} onChange={e => setRestorePassword(e.target.value)} /></label><button className="btn ghost" disabled={busy} onClick={() => act(async () => {setBackup(await api.backupInspect(restorePassword)); setRestorePassword('');})}>选择备份</button>{backup && <div className="wb-restore"><p>{backup.path}</p><p>{when(backup.at)} · {backup.count} 个文件</p><button className="btn danger" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => setResult(await api.backupRestore()))}>恢复并重启</button></div>}
     </div>}
   </section>;
 }

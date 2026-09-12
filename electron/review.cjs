@@ -108,7 +108,7 @@ async function commit(cwd, message) {
   await git(root, ['commit', '-m', text]);
   return review(root);
 }
-async function sync(cwd) {
+async function syncPlan(cwd) {
   const root = await gitRoot(cwd);
   const hasHead = await git(root, ['rev-parse', '--verify', 'HEAD']).then(() => true, () => false);
   if (!hasHead) throw new Error('还没有提交');
@@ -116,22 +116,33 @@ async function sync(cwd) {
   if (!branch) throw new Error('游离 HEAD 无法同步');
   const remotes = (await git(root, ['remote'])).split(/\r?\n/).filter(Boolean);
   if (!remotes.length) throw new Error('还没有远程仓库');
-  const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+  const configured = await git(root, ['config', '--get', `branch.${branch}.remote`]).then(s => s.trim(), () => '');
+  const remote = configured || (remotes.includes('origin') ? 'origin' : remotes[0]);
+  if (remote === '.' || !remotes.includes(remote)) throw new Error('请配置有效的远程跟踪分支');
+  const mergeRef = await git(root, ['config', '--get', `branch.${branch}.merge`]).then(s => s.trim(), () => `refs/heads/${branch}`);
+  if (!mergeRef.startsWith('refs/heads/')) throw new Error('不支持的远程分支');
   const net = { timeout: 120000, network: true };
   try {
     await git(root, ['fetch', remote, '--prune'], net);
     let upstream = '';
     try { upstream = (await git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])).trim(); } catch {}
-    if (!upstream) {
-      await git(root, ['push', '-u', remote, branch], net);
-      return review(root);
-    }
-    const behind = Number((await git(root, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'])).trim().split(/\s+/)[1]) || 0;
-    if (behind) await git(root, ['pull', '--no-rebase', '--no-edit', remote, branch], net);
-    const ahead = Number((await git(root, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'])).trim().split(/\s+/)[0]) || 0;
-    if (ahead) await git(root, ['push', remote, branch], net);
+    const current = await review(root);
+    if (current.files.length) throw new Error('请先提交或保存工作区改动，再同步');
+    if (current.ahead && current.behind) throw new Error('本地与远程已分叉，请在编辑器中处理；未合并或推送');
+    const head = (await git(root, ['rev-parse', 'HEAD'])).trim();
+    const remoteHead = upstream ? (await git(root, ['rev-parse', '@{upstream}'])).trim() : '';
+    return { root, remote, branch, mergeRef, upstream, head, remoteHead, action: !upstream || current.ahead ? '推送' : current.behind ? '快进拉取' : '已同步', count: current.ahead || current.behind || 0 };
   } catch (err) { throw gitFail(err); }
-  return review(root);
+}
+async function sync(cwd, approved) {
+  const plan = await syncPlan(cwd);
+  if (approved && JSON.stringify(plan) !== JSON.stringify(approved)) throw new Error('同步状态已改变，请重新确认');
+  const net = { timeout: 120000, network: true };
+  try {
+    if (plan.action === '快进拉取') await git(plan.root, ['merge', '--ff-only', plan.remoteHead]);
+    if (plan.action === '推送') await git(plan.root, ['push', ...(!plan.upstream ? ['-u'] : []), plan.remote, `HEAD:${plan.mergeRef}`], net);
+  } catch (error) { throw gitFail(error); }
+  return review(plan.root);
 }
 
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
@@ -156,11 +167,22 @@ async function projectSnapshot(cwd) {
   return { cwd: root, files, fingerprint: hash(JSON.stringify(files)) };
 }
 function checkpointFolder(dataRoot, cwd) { return path.join(dataRoot, 'checkpoints', hash(path.resolve(cwd).toLowerCase())); }
-async function checkpoint(dataRoot, cwd, label, sessionId) {
+async function checkpoint(dataRoot, cwd, label, sessionId, automatic = false) {
   const snap = await projectSnapshot(cwd);
+  const folder = checkpointFolder(dataRoot, cwd);
+  // Content addressed blobs avoid copying unchanged project files per turn.
+  for (const value of Object.values(snap.files)) {
+    const bytes = Buffer.from(value.data, 'base64');
+    const blob = hash(bytes), target = path.join(folder, 'blobs', blob);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (!fs.existsSync(target)) require('./storage.cjs').atomicWrite(target, require('node:zlib').gzipSync(bytes));
+    delete value.data; value.blob = blob;
+  }
+  snap.fingerprint = hash(JSON.stringify(snap.files));
   const id = crypto.randomUUID();
-  const record = { version: 1, id, at: new Date().toISOString(), label: String(label || '手动检查点').slice(0, 160), sessionId, ...snap };
+  const record = { version: 2, id, automatic, at: new Date().toISOString(), label: String(label || '手动检查点').slice(0, 160), sessionId, ...snap };
   writeJson(path.join(checkpointFolder(dataRoot, cwd), `${id}.json`), record);
+  pruneCheckpoints(dataRoot, cwd, id);
   return { id, at: record.at, label: record.label, sessionId, count: Object.keys(snap.files).length };
 }
 function checkpointList(dataRoot, cwd) {
@@ -168,20 +190,61 @@ function checkpointList(dataRoot, cwd) {
   if (!fs.existsSync(folder)) return [];
   return fs.readdirSync(folder).filter(s => s.endsWith('.json')).map(name => {
     const r = readJson(path.join(folder, name), null);
-    return r && { id: r.id, at: r.at, label: r.label, sessionId: r.sessionId, count: Object.keys(r.files || {}).length };
+    return r && { id: r.id, at: r.at, label: r.label, sessionId: r.sessionId, automatic: Boolean(r.automatic), count: Object.keys(r.files || {}).length };
   }).filter(Boolean).sort((a, b) => b.at.localeCompare(a.at));
 }
 function loadCheckpoint(dataRoot, cwd, id) {
   if (!/^[a-f0-9-]{36}$/i.test(id || '')) throw new Error('无效的检查点');
   const record = readJson(path.join(checkpointFolder(dataRoot, cwd), `${id}.json`), null);
   if (!record || path.resolve(record.cwd).toLowerCase() !== path.resolve(cwd).toLowerCase()) throw new Error('检查点不属于此项目');
-  if (record.version !== 1 || hash(JSON.stringify(record.files)) !== record.fingerprint) throw new Error('检查点内容校验失败');
+  if (![1, 2].includes(record.version) || hash(JSON.stringify(record.files)) !== record.fingerprint) throw new Error('检查点内容校验失败');
   record.files = Object.assign(Object.create(null), record.files);
   for (const name of Object.keys(record.files)) {
     if (name.split(/[\\/]/).some(part => part.toLowerCase() === '.git')) throw new Error('检查点包含 Git 内部文件');
     safePath(cwd, name);
+    if (record.version === 2) {
+      const blob = record.files[name].blob;
+      if (!/^[a-f0-9]{64}$/.test(blob)) throw new Error('检查点内容校验失败');
+      const bytes = require('node:zlib').gunzipSync(fs.readFileSync(path.join(checkpointFolder(dataRoot, cwd), 'blobs', blob)), { maxOutputLength: 64 * 1024 * 1024 });
+      if (hash(bytes) !== blob) throw new Error('检查点内容校验失败');
+      record.files[name] = { data: bytes.toString('base64'), mode: record.files[name].mode };
+    }
   }
+  record.fingerprint = hash(JSON.stringify(record.files));
   return record;
+}
+
+function deleteCheckpoint(dataRoot, cwd, id) {
+  loadCheckpoint(dataRoot, cwd, id);
+  const file = path.join(checkpointFolder(dataRoot, cwd), `${id}.json`);
+  fs.unlinkSync(file);
+  if (fs.existsSync(file + '.bak')) fs.unlinkSync(file + '.bak');
+  pruneCheckpoints(dataRoot, cwd);
+  return checkpointList(dataRoot, cwd);
+}
+function pruneCheckpoints(dataRoot, cwd, keepId) {
+  const folder = checkpointFolder(dataRoot, cwd);
+  const rows = checkpointList(dataRoot, cwd);
+  const expired = rows.filter(r => r.automatic && r.id !== keepId).slice(rows.some(r => r.id === keepId && r.automatic) ? 29 : 30);
+  for (const row of expired) fs.unlinkSync(path.join(folder, row.id + '.json'));
+  const refs = new Set(); let bytes = 0;
+  for (const name of fs.existsSync(folder) ? fs.readdirSync(folder).filter(n => n.endsWith('.json')) : []) {
+    const file = path.join(folder, name), record = readJson(file, {});
+    bytes += fs.statSync(file).size;
+    for (const value of Object.values(record.files || {})) if (value.blob) refs.add(value.blob);
+  }
+  const blobs = path.join(folder, 'blobs');
+  if (fs.existsSync(blobs)) for (const name of fs.readdirSync(blobs)) {
+    if (!/^[a-f0-9]{64}$/.test(name)) continue;
+    const file = path.join(blobs, name);
+    if (!refs.has(name)) fs.unlinkSync(file); else bytes += fs.statSync(file).size;
+  }
+  if (bytes > 256 * 1024 * 1024 && keepId) {
+    fs.unlinkSync(path.join(folder, keepId + '.json'));
+    pruneCheckpoints(dataRoot, cwd);
+    throw new Error('检查点空间达到 256 MB，请删除不需要的检查点');
+  }
+  return bytes;
 }
 async function restorePreview(dataRoot, cwd, id) {
   const record = loadCheckpoint(dataRoot, cwd, id), current = await projectSnapshot(cwd);
@@ -219,4 +282,4 @@ async function restoreCheckpoint(dataRoot, cwd, id, fingerprint) {
   }
   return { backup, changed: plan.files.length };
 }
-module.exports = { git, gitRoot, review, diff, stage, commit, sync, checkpoint, checkpointList, restorePreview, restoreCheckpoint, projectSnapshot };
+module.exports = { git, gitRoot, review, diff, stage, commit, sync, syncPlan, checkpoint, checkpointList, restorePreview, restoreCheckpoint, projectSnapshot, deleteCheckpoint, pruneCheckpoints };

@@ -840,7 +840,7 @@ function ToolGroups({ tools, cwd }) {
                       </div>
                     ) : null}
                     {tool.output && !isImageOnlyOutput(tool.output) ? (
-                      <pre>{tool.output.slice(0, 4000)}</pre>
+                      <pre>{tool.output}</pre>
                     ) : null}
                   </details>
                 );
@@ -939,6 +939,7 @@ export function App() {
   const [workbenchPage, setWorkbenchPage] = useState('');
   const [permissionItems, setPermissionItems] = useState([]);
   const [selectedPermission, setSelectedPermission] = useState(null);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [composerReady, setComposerReady] = useState(false);
   const composerSaveRef = useRef(null);
   const composerKeyRef = useRef(null);
@@ -1150,6 +1151,11 @@ export function App() {
             });
           }
         }
+      }
+      if (event.type === 'forget-composer') {
+        const id = event.payload.sessionId;
+        delete recoveredComposers.current[id]; delete draftsRef.current[id]; delete filesRef.current[id]; delete queuesStore.current[id];
+        try { localStorage.setItem('halora.composer', JSON.stringify(recoveredComposers.current)); } catch {}
       }
       if (event.type === "error") setError(event.payload?.message || "出了点问题");
     });
@@ -3205,9 +3211,11 @@ export function App() {
         </div>
       ) : null}
 
-      {permission ? (
-        <div className="overlay">
+      {permission && <button type="button" className="permission-launch btn primary" onClick={() => setPermissionsOpen(p => !p)}>待授权 · {permissionItems.length}</button>}
+      {permission && permissionsOpen ? (
+        <aside className="permission-dock" aria-label="权限请求">
           <div className="modal">
+            <button type="button" className="btn ghost" onClick={() => setPermissionsOpen(false)}>收起</button>
             <div className="permission-tabs">{permissionItems.map(item => <button key={item.requestId} className={`btn ${item === permission ? 'primary' : 'ghost'}`} onClick={() => { setSelectedPermission(item.requestId); setPermissionError(''); }}>{item.sessionTitle || item.sessionId?.slice(0, 8) || '当前对话'}</button>)}</div>
             <p className="permission-origin">{permission.cwd} · {permissionItems.length} 项待处理</p>
             <h2>{permission.title}</h2>
@@ -3230,7 +3238,7 @@ export function App() {
               ))}
             </div>
           </div>
-        </div>
+        </aside>
       ) : null}
 
       {preview ? (

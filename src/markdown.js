@@ -68,7 +68,7 @@ function safeHref(value) {
 
 function safeSrc(value) {
   const src = String(value || "").trim();
-  if (/^https?:\/\//i.test(src) || /^data:image\//i.test(src)) return src;
+  if (/^data:image\/(png|jpeg|gif|webp|bmp);base64,/i.test(src)) return src;
   return "";
 }
 
@@ -111,6 +111,12 @@ function sanitize(html) {
           child.removeAttribute("href");
         }
       } else if (child.tagName === "IMG") {
+        const remote = child.getAttribute('src') || '';
+        if (/^https?:\/\//i.test(remote)) {
+          const link = doc.createElement('a');
+          link.href = remote; link.textContent = child.getAttribute('alt') || '查看远程图片';
+          link.rel = 'noreferrer noopener'; child.replaceWith(link); child = next; continue;
+        }
         const src = safeSrc(child.getAttribute("src"));
         if (src) child.setAttribute("src", src);
         else {

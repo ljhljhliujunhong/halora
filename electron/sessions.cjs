@@ -320,14 +320,18 @@ function listProjects(options = {}) {
   });
 }
 
-function deleteSession(cwd, sessionId) {
+function deleteSession(cwd, sessionId, trashRoot) {
   if (!cwd || !sessionId) return false;
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error('无效的会话编号');
   const root = sessionsRoot();
   let deleted = false;
   for (const variant of cwdVariants(cwd)) {
     const dir = path.join(root, encodeCwd(variant), sessionId);
     if (!fs.existsSync(dir)) continue;
-    fs.rmSync(dir, { recursive: true, force: true });
+    if (trashRoot) {
+      fs.mkdirSync(trashRoot, { recursive: true });
+      fs.renameSync(dir, path.join(trashRoot, `${sessionId}-${Date.now()}-${require('node:crypto').randomUUID()}`));
+    } else fs.rmSync(dir, { recursive: true, force: true });
     deleted = true;
   }
   return deleted;
@@ -594,24 +598,32 @@ function collectContentImages(content, dir) {
 function messageFingerprint(msg) {
   if (msg?.role === "user") {
     const text = normText(msg.text);
-    if (text) return `u:${text.slice(0, 240)}`;
+    if (text) return `u:${text}`;
     const imgs = (msg.images || []).map((item) => item.path || item.name || "").join("|");
     return imgs ? `uimg:${imgs}` : "";
   }
   if (msg?.role === "assistant") {
     const text = normText(msg.text);
-    return text ? `a:${text.slice(0, 180)}` : "";
+    return JSON.stringify([text, msg.thought, msg.tools, msg.images]);
   }
   return "";
 }
 
 function pushUniqueMessage(list, msg) {
-  const fp = messageFingerprint(msg);
-  if (fp && list.some((item) => messageFingerprint(item) === fp)) return;
   list.push({
     ...msg,
     id: `${msg.role === "user" ? "u" : "a"}-${list.length}`,
   });
+}
+
+// Only remove an overlapping boundary between two persisted sources. Repeated
+// turns inside either source are legitimate conversation history.
+function appendHistory(list, incoming) {
+  let overlap = 0;
+  for (let size = Math.min(list.length, incoming.length); size > 0; size--) {
+    if (incoming.slice(0, size).every((m, i) => messageFingerprint(m) === messageFingerprint(list[list.length - size + i]))) { overlap = size; break; }
+  }
+  for (const msg of incoming.slice(overlap)) pushUniqueMessage(list, msg);
 }
 
 function listSegmentFiles(dir) {
@@ -706,7 +718,7 @@ function foldSegmentMarkdown(md, dir) {
       continue;
     }
     if (role === "Function") {
-      const out = body.replace(/^\[tool_response\]\s*/i, "").slice(0, 1500);
+      const out = body.replace(/^\[tool_response\]\s*/i, "");
       for (let j = messages.length - 1; j >= 0; j -= 1) {
         const tools = messages[j].tools || [];
         const tool = [...tools].reverse().find((item) => !item.output);
@@ -730,7 +742,7 @@ function foldCompaction(dir) {
     } catch {
       continue;
     }
-    for (const msg of foldSegmentMarkdown(md, dir)) pushUniqueMessage(messages, msg);
+    appendHistory(messages, foldSegmentMarkdown(md, dir));
   }
   return messages;
 }
@@ -770,7 +782,7 @@ function foldChatHistory(rows, dir) {
     const kind = row?.type;
     if (!kind || kind === "system" || kind === "backend_tool_call") continue;
     if (kind === "tool_result") {
-      const out = extractText(row.content).slice(0, 4000);
+      const out = extractText(row.content);
       const id = row.tool_call_id;
       for (let i = messages.length - 1; i >= 0; i -= 1) {
         const tool = (messages[i].tools || []).find((item) => item.id === id);
@@ -1007,9 +1019,7 @@ function readTranscript(cwd, sessionId) {
   const messages = foldCompaction(dir);
   const historyFile = path.join(dir, "chat_history.jsonl");
   if (fs.existsSync(historyFile)) {
-    for (const msg of foldChatHistory(readJsonl(historyFile), dir)) {
-      pushUniqueMessage(messages, msg);
-    }
+    appendHistory(messages, foldChatHistory(readJsonl(historyFile), dir));
     return attachTurnDurations(messages, dir);
   }
   if (messages.length) return attachTurnDurations(messages, dir);

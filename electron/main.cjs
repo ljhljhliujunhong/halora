@@ -9,6 +9,9 @@ const { readJson, writeJson, atomicWrite, preferences } = require('./storage.cjs
 const { PermissionQueue } = require('./permissions.cjs');
 const reviewService = require('./review.cjs');
 const archives = require('./archives.cjs');
+const { job } = require('./jobs.cjs');
+const maintenanceService = require('./maintenance.cjs');
+const diagnostics = require('./diagnostics.cjs');
 const {
   listSessionsForCwd,
   listProjects,
@@ -86,9 +89,10 @@ function markInterrupted() {
   writeJson(dataFile('recovery.json'), value);
 }
 function activeProject(cwd) {
-  return [...live.values()].some(slot => slot.running && samePath(slot.cwd, cwd));
+  return runningIds().some(id => samePath(cwdOfSession(id), cwd));
 }
 async function lockedProject(cwd, action) {
+  if (maintenance) throw new Error('数据操作正在进行，请稍后再试');
   const key = lockKey(cwd);
   if (activeProject(cwd) || projectLocks.has(key)) throw new Error('项目还有任务运行，请停止后再操作');
   projectLocks.add(key);
@@ -112,11 +116,12 @@ function runningIds() {
   for (const [id, slot] of live) {
     if (slot.running) ids.push(id);
   }
+  for (const drain of acp.draining?.values() || []) if (!ids.includes(drain.sessionId)) ids.push(drain.sessionId);
   return ids;
 }
 
 function viewedRunning() {
-  return Boolean(state.sessionId && live.get(state.sessionId)?.running);
+  return Boolean(state.sessionId && runningIds().includes(state.sessionId));
 }
 
 function cwdOfSession(sessionId) {
@@ -261,6 +266,8 @@ function snapshot() {
     connection: state.ready ? 'connected' : reconnectTimer || connecting ? 'reconnecting' : 'disconnected',
     everReady: Boolean(state.everReady),
     checkpointWarning: state.checkpointWarning || '',
+    settingsWarning: state.settingsWarning || '',
+    version: require('../package.json').version,
     permissionMode: state.permissionMode || "agent",
     grokFound: Boolean(state.grokBin),
     sidebarCollapsed: Boolean(loadSettings().sidebarCollapsed),
@@ -346,9 +353,9 @@ function projectListOptions(settings) {
   };
 }
 
-function refreshSessions() {
+function refreshSessions(index) {
   const settings = loadSettings();
-  state.projects = listProjects(projectListOptions(settings));
+  state.projects = index || listProjects(projectListOptions(settings));
   if (stabilizeChatOrder(state.projects)) {
     state.projects = listProjects(projectListOptions(loadSettings()));
   }
@@ -364,6 +371,7 @@ function refreshSessions() {
 let sessionWatchers = [];
 let refreshTimer = null;
 let pollTimer = null;
+let indexing = false;
 let quotaTimer = null;
 let quotaRetryTimer = null;
 let quotaRetryStep = 0;
@@ -402,13 +410,21 @@ function stopSessionWatch() {
 
 function scheduleSessionRefresh() {
   if (refreshTimer) return;
-  refreshTimer = setTimeout(() => {
+  refreshTimer = setTimeout(async () => {
     refreshTimer = null;
+    if (indexing || maintenance || quitting) return;
+    indexing = true;
+    const settingsBefore = JSON.stringify(loadSettings());
+    try {
+    const index = await job('sessions', 'listProjects', [projectListOptions(loadSettings())]);
+    if (maintenance || quitting || settingsBefore !== JSON.stringify(loadSettings())) return;
     const before = sessionsFingerprint();
     const used = state.context?.used;
-    refreshSessions();
+    refreshSessions(index);
     refreshContext();
     if (sessionsFingerprint() !== before || state.context?.used !== used) send("state", snapshot());
+    } catch (error) { diagnostics.log(app.getPath('userData'), 'session-index', error); }
+    finally { indexing = false; }
   }, 400);
 }
 
@@ -669,12 +685,22 @@ function createWindow() {
       app.quit();
     } finally { closing = false; }
   });
-  win.webContents.on('render-process-gone', () => {
+  const crashes = [];
+  win.webContents.on('render-process-gone', async (_event, details) => {
+    diagnostics.log(app.getPath('userData'), 'renderer-crash', JSON.stringify(details));
     markInterrupted();
     for (const id of runningIds()) { try { acp.cancel(id); } catch {} }
     resetLive(true);
     permissions.clear();
-    win?.reload();
+    const now = Date.now(); crashes.push(now);
+    while (crashes.length && now - crashes[0] > 60000) crashes.shift();
+    if (crashes.length <= 2) win?.reload();
+    else {
+      const answer = await dialog.showMessageBox(win, { type: 'error', title: 'Halora', message: '界面连续崩溃，已暂停自动恢复。', buttons: ['关闭', '打开日志', '重新加载'], defaultId: 0, cancelId: 0 });
+      if (answer.response === 1) await shell.openPath(dataFile('logs'));
+      if (answer.response === 2) { crashes.length = 0; win?.reload(); }
+      else { quitting = true; app.quit(); }
+    }
   });
 }
 
@@ -768,15 +794,15 @@ function pickAllowOption(options) {
   const score = (opt) => {
     const blob = `${opt.kind || ""} ${opt.name || ""}`.toLowerCase();
     if (blob.includes("allow_always") || blob.includes("allow always") || blob.includes("始终允许")) {
-      return 3;
+      return 1;
     }
     if (blob.includes("allow_once") || blob.includes("allow once") || blob.includes("允许一次")) {
-      return 2;
+      return 3;
     }
-    if (blob.includes("allow")) return 1;
+    if (blob.includes("allow")) return 2;
     return 0;
   };
-  return [...list].sort((a, b) => score(b) - score(a))[0] || null;
+  return list.filter(opt => score(opt) > 0).sort((a, b) => score(b) - score(a))[0] || null;
 }
 
 acp.on("permission", ({ requestId, params }) => {
@@ -811,6 +837,7 @@ acp.on("exit", () => {
   send("state", snapshot());
   if (!quitting) scheduleReconnect();
 });
+acp.on('settled', () => send('state', snapshot()));
 
 function scheduleReconnect() {
   if (reconnectTimer || quitting || reconnectAttempts >= 5) return;
@@ -1054,9 +1081,11 @@ ipcMain.handle("pin-chat", async (_event, { id, pinned }) => {
 });
 
 ipcMain.handle("delete-chat", async (_event, { id, cwd }) => {
+  if (maintenance) throw new Error('数据操作正在进行，请稍后再试');
   const target = cwd || state.cwd;
   if (!id || !target) throw new Error("找不到这次对话");
   cancelLive(id);
+  await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === id).map(d => d.done));
   live.delete(id);
   if (state.sessionId === id) {
     state.sessionId = null;
@@ -1071,7 +1100,12 @@ ipcMain.handle("delete-chat", async (_event, { id, cwd }) => {
     pinnedChats: (settings.pinnedChats || []).filter((item) => item !== id),
     chatOrder: dropFromChatOrder(settings.chatOrder, id),
   });
-  deleteSession(target, id);
+  deleteSession(target, id, dataFile('trash'));
+  maintenanceService.forgetComposer(app.getPath('userData'), id);
+  const savedRecovery = recovery();
+  savedRecovery.deletedSessions = [...new Set([...(savedRecovery.deletedSessions || []), id])];
+  writeJson(dataFile('recovery.json'), savedRecovery);
+  send('forget-composer', { sessionId: id });
   refreshSessions();
   send("state", snapshot());
   return snapshot();
@@ -1202,9 +1236,12 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
   const gen = beginTurn(sessionId, cwd, { user: rawText, itemId: payload?.itemId });
   send("state", snapshot());
   try {
+    await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === sessionId).map(d => d.done));
+    if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
     if (preferences(loadSettings()).checkpoints && !rawText.trim().startsWith('/')) {
       try {
-        await reviewService.checkpoint(app.getPath('userData'), cwd, rawText || '发送附件前', sessionId);
+        if ([...live.entries()].some(([id, slot]) => id !== sessionId && slot.running && samePath(slot.cwd, cwd))) throw new Error('同项目另一个任务正在修改文件');
+        await job('review', 'checkpoint', [app.getPath('userData'), cwd, rawText || '发送附件前', sessionId, true]);
         state.checkpointWarning = '';
       } catch (error) {
         state.checkpointWarning = `本轮未建立文件检查点：${error.message}`;
@@ -1212,9 +1249,11 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
       }
     }
     const context = buildContext(cwd, sessionId);
+    if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
     if (!rawText.trim().startsWith('/') && context.percent >= preferences(loadSettings()).autoCompact) {
       await acp.compact(sessionId, '');
     }
+    if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
     try {
       const result = await acp.prompt(sessionId, text, images, fileList);
       return { ok: true, result };
@@ -1341,6 +1380,7 @@ ipcMain.handle("login", async () => {
 function saveComposer(payload) {
   if (maintenance) return { ok: false };
   if (!payload || typeof payload.key !== 'string' || payload.key.length > 1200) throw new Error('无效的草稿');
+  if ((recovery().deletedSessions || []).includes(payload.key)) return { ok: false };
   const value = readJson(dataFile('composer.json'), {});
   const row = JSON.parse(JSON.stringify(payload.value || {}));
   const cleanImage = image => {
@@ -1369,9 +1409,10 @@ ipcMain.on?.('save-composer-sync', (event, payload) => {
 ipcMain.handle('reconnect', async () => { reconnectAttempts = 0; await ensureAgent(); send('state', snapshot()); return snapshot(); });
 ipcMain.handle('grok-check-update', () => grokUpdate.check(state.grokBin || findGrokBinary()));
 ipcMain.handle('grok-install-update', async () => {
-  if (runningIds().length) throw new Error('请先停止所有运行中的任务');
+  if (runningIds().length || maintenance || projectLocks.size) throw new Error('请先停止所有运行中的任务');
   const bin = state.grokBin || findGrokBinary();
   if (!bin) throw new Error('找不到 Grok Build');
+  maintenance = true;
   acp.stop();
   state.ready = false;
   try {
@@ -1391,7 +1432,7 @@ ipcMain.handle('grok-install-update', async () => {
   } catch (error) {
     ensureAgent().catch(() => send('state', snapshot()));
     throw error;
-  }
+  } finally { maintenance = false; }
 });
 ipcMain.handle('relaunch-app', () => { quitting = true; app.relaunch(); app.exit(0); });
 ipcMain.handle('dismiss-recovery', (_event, id) => { updateRecovery(id, null); send('state', snapshot()); return snapshot(); });
@@ -1399,6 +1440,11 @@ ipcMain.handle('refresh-quota', async () => { await refreshQuota(true); return s
 ipcMain.handle('save-preferences', async (_event, payload) => {
   const next = preferences({ ...loadSettings(), ...payload });
   if (next.defaultCwd && !fs.statSync(next.defaultCwd).isDirectory()) throw new Error('默认项目不是文件夹');
+  const old = preferences(loadSettings());
+  saveSettings(next);
+  state.permissionMode = next.permissionMode;
+  state.settingsWarning = '';
+  if (old.autoCompact !== next.autoCompact) try {
   // Grok reads this section for its own automatic compaction as well.
   const config = path.join(grokHome(), 'config.toml');
   const raw = (fs.existsSync(config) ? fs.readFileSync(config, 'utf8').trimEnd() : '') + '\n';
@@ -1411,8 +1457,10 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
     configNext = raw.replace(section, () => match[1] + body);
   } else configNext = raw.trimEnd() + `\n\n[session]\n${key}\n`;
   atomicWrite(config, configNext);
-  saveSettings(next);
-  state.permissionMode = next.permissionMode;
+  } catch (error) {
+    state.settingsWarning = 'Halora 设置已保存；Grok 压缩配置写入失败：' + error.message;
+    diagnostics.log(app.getPath('userData'), 'save-config', error);
+  }
   // The preference is a default for new sessions. The current model selector
   // is the only action that changes an existing session's model.
   refreshContext(); send('state', snapshot()); return snapshot();
@@ -1421,10 +1469,19 @@ ipcMain.handle('review', (_event, cwd) => reviewService.review(cwd || state.cwd)
 ipcMain.handle('review-diff', (_event, { cwd, file }) => reviewService.diff(cwd || state.cwd, file));
 ipcMain.handle('review-stage', (_event, { cwd, files, unstage, all }) => lockedProject(cwd || state.cwd, () => reviewService.stage(cwd || state.cwd, all ? true : files, unstage)));
 ipcMain.handle('review-commit', (_event, { cwd, message }) => lockedProject(cwd || state.cwd, () => reviewService.commit(cwd || state.cwd, message)));
-ipcMain.handle('review-sync', (_event, { cwd } = {}) => lockedProject(cwd || state.cwd, () => reviewService.sync(cwd || state.cwd)));
-ipcMain.handle('checkpoints', (_event, cwd) => reviewService.checkpointList(app.getPath('userData'), cwd || state.cwd));
-ipcMain.handle('create-checkpoint', (_event, { cwd, label }) => lockedProject(cwd || state.cwd, () => reviewService.checkpoint(app.getPath('userData'), cwd || state.cwd, label, state.sessionId)));
-ipcMain.handle('preview-restore', (_event, { cwd, id }) => reviewService.restorePreview(app.getPath('userData'), cwd || state.cwd, id));
+ipcMain.handle('review-sync', (_event, { cwd } = {}) => lockedProject(cwd || state.cwd, async () => {
+  const target = cwd || state.cwd, plan = await reviewService.syncPlan(target);
+  if (plan.action === '已同步') return reviewService.review(target);
+  const answer = await dialog.showMessageBox(win, { type: 'question', title: '同步仓库', message: `${plan.action}${plan.count ? ' ' + plan.count + ' 个提交' : ''}？`, detail: `${plan.remote} · ${plan.mergeRef}`, buttons: ['取消', plan.action], defaultId: 0, cancelId: 0 });
+  return answer.response === 1 ? reviewService.sync(target, plan) : reviewService.review(target);
+}));
+ipcMain.handle('checkpoints', (_event, cwd) => job('review', 'checkpointList', [app.getPath('userData'), cwd || state.cwd]));
+ipcMain.handle('create-checkpoint', (_event, { cwd, label }) => lockedProject(cwd || state.cwd, () => job('review', 'checkpoint', [app.getPath('userData'), cwd || state.cwd, label, state.sessionId])));
+ipcMain.handle('delete-checkpoint', (_event, { cwd, id }) => lockedProject(cwd || state.cwd, async () => {
+  const answer = await dialog.showMessageBox(win, { type: 'warning', message: '删除这个检查点？', detail: '删除后无法再从此检查点恢复文件。', buttons: ['取消', '删除'], defaultId: 0, cancelId: 0 });
+  return answer.response === 1 ? job('review', 'deleteCheckpoint', [app.getPath('userData'), cwd || state.cwd, id]) : job('review', 'checkpointList', [app.getPath('userData'), cwd || state.cwd]);
+}));
+ipcMain.handle('preview-restore', (_event, { cwd, id }) => job('review', 'restorePreview', [app.getPath('userData'), cwd || state.cwd, id]));
 async function rewindPoints(sessionId, cwd) {
   await attachSession(sessionId, cwd);
   const result = await acp.request('_x.ai/rewind/points', { sessionId }, { timeoutMs: 15000 });
@@ -1462,7 +1519,7 @@ ipcMain.handle('restore-checkpoint', async (_event, { cwd, id, fingerprint }) =>
     if (preview.fingerprint !== fingerprint) throw new Error('文件已变化，请重新预览');
     const confirm = await dialog.showMessageBox(win, { type: 'warning', title: '恢复检查点', message: `将恢复 ${preview.files.length} 个文件。`, detail: '工作区文件会被替换；Git 暂存区和对话历史保持原状。恢复前会建立备份检查点。', buttons: ['取消', '恢复文件'], defaultId: 0, cancelId: 0 });
     if (confirm.response !== 1) return { canceled: true };
-    return reviewService.restoreCheckpoint(app.getPath('userData'), target, id, fingerprint);
+    return job('review', 'restoreCheckpoint', [app.getPath('userData'), target, id, fingerprint]);
   });
 });
 ipcMain.handle('export-chat', async (_event, { cwd, sessionId, format }) => {
@@ -1477,17 +1534,20 @@ ipcMain.handle('export-chat', async (_event, { cwd, sessionId, format }) => {
   return { path: result.filePath };
 });
 let backupSelection = null;
-ipcMain.handle('backup-create', async () => {
+ipcMain.handle('backup-create', async (_event, password = '') => {
   if (runningIds().length) throw new Error('请等待正在运行的任务结束后备份');
   const result = await dialog.showSaveDialog(win, { title: '备份 Halora', defaultPath: `halora-${new Date().toISOString().slice(0, 10)}.halora`, filters: [{ name: 'Halora 备份', extensions: ['halora'] }] });
   if (result.canceled || !result.filePath) return null;
-  return archives.createBackup(app.getPath('userData'), grokHome(), result.filePath);
+  if (runningIds().length || projectLocks.size) throw new Error('请等待任务和文件操作结束后备份');
+  maintenance = true;
+  try { return await job('archives', 'createBackup', [app.getPath('userData'), grokHome(), result.filePath, password]); }
+  finally { maintenance = false; }
 });
-ipcMain.handle('backup-inspect', async () => {
+ipcMain.handle('backup-inspect', async (_event, password = '') => {
   const result = await dialog.showOpenDialog(win, { title: '选择 Halora 备份', properties: ['openFile'], filters: [{ name: 'Halora 备份', extensions: ['halora'] }] });
   if (result.canceled || !result.filePaths[0]) return null;
-  const bundle = archives.parseBackup(result.filePaths[0]);
-  backupSelection = { path: result.filePaths[0], fingerprint: bundle.fingerprint };
+  const bundle = await job('archives', 'parseBackup', [result.filePaths[0], password]);
+  backupSelection = { path: result.filePaths[0], fingerprint: bundle.fingerprint, password };
   return { at: bundle.at, count: bundle.files.length, path: backupSelection.path };
 });
 ipcMain.handle('backup-restore', async () => {
@@ -1500,11 +1560,30 @@ ipcMain.handle('backup-restore', async () => {
   try {
     stopSessionWatch(); stopQuotaTimers(); acp.stop();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    const result = archives.restoreBackup(app.getPath('userData'), grokHome(), backupSelection.path, backupSelection.fingerprint);
+    const result = await job('archives', 'restoreBackup', [app.getPath('userData'), grokHome(), backupSelection.path, backupSelection.fingerprint, backupSelection.password]);
     quitting = true; app.relaunch(); app.exit(0);
     return result;
-  } catch (error) { watchSessions(); throw error; }
+  } catch (error) { watchSessions(); ensureAgent().catch(() => {}); refreshQuota(); quotaTimer = setInterval(() => refreshQuota(), 5 * 60 * 1000); throw error; }
   finally { maintenance = false; }
+});
+
+ipcMain.handle('storage-inspect', () => job('maintenance', 'inspect', [app.getPath('userData'), grokHome()]));
+ipcMain.handle('storage-cleanup', async (_event, paths) => {
+  if (runningIds().length || projectLocks.size || maintenance) throw new Error('请等待任务完成');
+  const answer = await dialog.showMessageBox(win, { type: 'warning', message: '清理选中的过期备份和未引用附件？', detail: '这些文件将永久删除。最近三份安全备份会保留。', buttons: ['取消', '清理'], defaultId: 0, cancelId: 0 });
+  if (answer.response !== 1) return job('maintenance', 'inspect', [app.getPath('userData'), grokHome()]);
+  if (runningIds().length || projectLocks.size || maintenance) throw new Error('请等待任务完成');
+  maintenance = true;
+  try { return await job('maintenance', 'cleanup', [app.getPath('userData'), grokHome(), paths]); }
+  finally { maintenance = false; }
+});
+ipcMain.handle('renderer-error', (_event, message) => diagnostics.log(app.getPath('userData'), 'renderer-error', String(message).slice(0, 4000)));
+ipcMain.handle('diagnostics-export', async () => {
+  const result = await dialog.showSaveDialog(win, { defaultPath: 'halora-diagnostics.json' });
+  if (result.canceled || !result.filePath) return null;
+  const file = dataFile('logs/halora.log');
+  atomicWrite(result.filePath, JSON.stringify({ version: require('../package.json').version, platform: process.platform, electron: process.versions.electron, connected: state.ready, running: runningIds().length, log: fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '' }, null, 2));
+  return { path: result.filePath };
 });
 
 app.setName("Halora");
@@ -1522,6 +1601,7 @@ if (process.env.SMOKE_TEST === "1") {
 } else if (primaryInstance) {
   app.whenReady().then(() => {
     markInterrupted();
+    process.on('uncaughtExceptionMonitor', error => diagnostics.log(app.getPath('userData'), 'main-error', error));
     hydrateQuota();
     createWindow();
     state.grokBin = findGrokBinary();
