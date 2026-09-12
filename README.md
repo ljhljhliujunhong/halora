@@ -23,9 +23,33 @@ npm run pack
 
 完成后，项目目录里的 `星环.exe` 就是最新版。双击它，或运行 `打开星环.bat`。
 
-构建唯一来源由 `package.json` 的 `build.directories.output` 指定，目前为 `E:/VsCodeProject/Agent缓存文件/halora-release`。安装时校验包版本、源码/界面内容以及全部文件的 SHA-256。根目录启动器只启动 `halora-app/Halora.exe`，不再挑选旧目录或比较 EXE 时间。
+构建唯一来源由 `package.json` 的 `build.directories.output` 指定，目前为 `E:/VsCodeProject/Agent缓存文件/halora-release`。安装时校验包版本、源码/界面内容以及全部文件的 SHA-256。根目录启动器固定启动 `runtime/app/Halora.exe`。
 
-应用运行时，新包会暂存在 `E:/VsCodeProject/Agent缓存文件/halora-updates`；后台安装器等待进程退出后整体替换目录并再次校验。旧版保留在该目录中，替换失败会恢复旧版。重启电脑中断安装后，再运行根目录启动器会继续待完成的更新；恢复安装需要本机 Node.js 仍在原位置。
+应用运行时，新包会暂存在 `E:/VsCodeProject/Agent缓存文件/halora-updates`；Halora 收到更新事务后保存恢复状态并正常退出，后台安装器原地替换 `runtime/app`，复核全部文件后自动重启。更新时会短暂创建 `runtime/.rollback-*`，成功后立即删除；替换失败则恢复原程序。重启电脑中断安装后，再运行根目录启动器会继续待完成的更新；恢复安装需要本机 Node.js 仍在原位置。
+
+## 目录说明
+
+```text
+GrokBuild/
+  src/                React 界面、消息渲染与交互
+  electron/           桌面主进程、Grok 接入及本地服务
+  scripts/            图标、安装、更新与旧产物清理脚本
+  tests/              回归测试
+  public/             原始静态资源
+  build/              打包图标（自动生成）
+  dist/               前端构建结果（自动生成）
+  node_modules/       本项目开发依赖
+  runtime/            安装后的程序（不进入版本控制）
+    app/              唯一一份当前程序
+  星环.exe            日常使用的固定启动入口
+  打开星环.bat        同一入口的批处理快捷方式
+```
+
+安装器只保留 `runtime/app/`。新程序在缓存目录完成构建和哈希校验，应用退出后才进入安装目录；原程序只作为本次更新的临时回滚副本，安装校验成功后立即删除。开发服务器不会监听这些安装产物。
+
+升级后可运行 `npm run tidy` 删除历史遗留的根目录 `halora-app*`、`release` 和 `pack-out`。脚本先校验当前版本，并拒绝删除含有 Git 跟踪文件或无法确认内容的目录。
+
+用户设置、草稿与检查点仍位于系统的 Halora 用户数据目录，Grok 登录与会话仍使用本机 Grok 数据目录，不随安装目录迁移。`src/App.jsx` 与 `electron/main.cjs` 仍较大，后续可按会话、侧栏和 IPC 服务逐步拆分；目录整理不混入业务逻辑重构。
 
 ## 0.2.2 可靠性改进
 

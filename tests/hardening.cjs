@@ -89,13 +89,13 @@ test('sync refuses divergence and preserves head and working files', async () =>
   put(path.join(cwd,'local'),'local'); git(cwd,'add','.'); git(cwd,'commit','-qm','local'); const head = git(cwd,'rev-parse','HEAD');
   await assert.rejects(review.sync(cwd), /分叉/); assert.equal(git(cwd,'rev-parse','HEAD'), head); assert.equal(fs.existsSync(path.join(cwd,'.git','MERGE_HEAD')),false);
 });
-test('installer verifies hashes, swaps whole directories, and keeps the previous app', () => {
-  const install = path.join(root,'install'), stage = path.join(root,'stage'), backup = path.join(root,'previous'), marker = path.join(install,'.halora-update.json'), launcher = path.join(root,'launcher.exe');
-  put(path.join(install,'halora-app','Halora.exe'),'old'); put(path.join(stage,'Halora.exe'),'new'); put(launcher,'launcher');
+test('installer verifies hashes, replaces the single app, and deletes its rollback copy', () => {
+  const install = path.join(root,'install'), stage = path.join(root,'stage'), backup = path.join(install,'runtime','.rollback-'+crypto.randomUUID()), marker = path.join(install,'.halora-update.json'), launcher = path.join(root,'launcher.exe');
+  put(path.join(install,'runtime/app/Halora.exe'),'old'); put(path.join(stage,'Halora.exe'),'new'); put(launcher,'launcher');
   const manifest = deploy.manifest(stage,'0.2.2');
   put(path.join(stage,'Halora.exe'),'bad'); assert.throws(() => deploy.verify(stage,manifest), /校验/); put(path.join(stage,'Halora.exe'),'new');
   const tx = {root:install,stage,backup,marker,launcher,launcherHash:deploy.hash(fs.readFileSync(launcher)),manifest}; put(marker,JSON.stringify(tx)); deploy.apply(tx);
-  assert.equal(fs.readFileSync(path.join(install,'halora-app','Halora.exe'),'utf8'),'new'); assert.equal(fs.readFileSync(path.join(backup,'Halora.exe'),'utf8'),'old'); assert.equal(fs.existsSync(marker),false);
+  assert.equal(fs.readFileSync(path.join(install,'runtime/app/Halora.exe'),'utf8'),'new'); assert.equal(fs.existsSync(backup),false); assert.equal(fs.existsSync(marker),false);
   // Resume a crash after swapping but before clearing the marker.
   put(marker,JSON.stringify(tx)); deploy.apply(tx); assert.equal(fs.existsSync(marker),false);
 });
@@ -108,18 +108,18 @@ test('cleanup preserves referenced attachments and only removes approved stale f
 });
 
 test('Windows deferred installer waits for the app process to exit then installs automatically', {skip:process.platform !== 'win32'}, async () => {
-  const install = path.join(root,'deferred'), target = path.join(install,'halora-app'), stage = path.join(root,'deferred-stage');
+  const install = path.join(root,'deferred'), target = path.join(install,'runtime/app'), stage = path.join(root,'deferred-stage');
   fs.mkdirSync(target,{recursive:true});
   execFileSync('C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe', ['/nologo','/target:winexe',`/out:${path.join(target,'Halora.exe')}`,path.join(__dirname,'fixtures/hold.cs')], {windowsHide:true});
   put(path.join(stage,'Halora.exe'),'new'); const launcher=path.join(root,'deferred-launcher.exe'); put(launcher,'launcher');
   const marker=path.join(install,'.halora-update.json');
-  const tx={root:install,stage,backup:path.join(root,'deferred-previous'),marker,launcher,launcherHash:deploy.hash(fs.readFileSync(launcher)),manifest:deploy.manifest(stage,'0.2.2')}; put(marker,JSON.stringify(tx));
+  const tx={root:install,stage,backup:path.join(install,'runtime','.rollback-'+crypto.randomUUID()),marker,launcher,launcherHash:deploy.hash(fs.readFileSync(launcher)),manifest:deploy.manifest(stage,'0.2.2'),relaunch:false}; put(marker,JSON.stringify(tx));
   const app=spawn(path.join(target,'Halora.exe'),[],{windowsHide:true});
   assert.equal(deploy.running(install),true);
   const helper=spawn(process.execPath,[path.resolve(__dirname,'../scripts/deployment.cjs'),marker],{windowsHide:true});
   const completed=new Promise((resolve,reject)=>{helper.on('error',reject);helper.on('exit',code=>code===0?resolve():reject(new Error(String(code))));});
   await new Promise(r=>setTimeout(r,500)); assert.equal(fs.existsSync(marker),true);
   await completed;
-  assert.equal(fs.existsSync(marker),false); assert.equal(fs.readFileSync(path.join(target,'Halora.exe'),'utf8'),'new');
+  assert.equal(fs.existsSync(marker),false); assert.equal(fs.readFileSync(path.join(target,'Halora.exe'),'utf8'),'new'); assert.equal(fs.existsSync(tx.backup),false);
   app.unref();
 });

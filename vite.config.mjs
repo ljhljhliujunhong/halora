@@ -8,6 +8,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: ['**/runtime/**', '**/halora-app*/**', '**/release/**', '**/pack-out/**'],
+    },
   },
   build: {
     outDir: "dist",

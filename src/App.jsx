@@ -493,6 +493,45 @@ function IconFolder() {
   );
 }
 
+function IconReview() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+      <path d="M6 3h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2zM8 8h8M8 12h3M8 16h3M15 14v4M13 16h4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconCheckpoint() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+      <path d="M5 4h14v17l-7-4-7 4V4zM8 8h8M8 11h5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconArchive() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+      <path d="M4 7h16v13H4V7zM3 4h18v3H3V4zM9 11h6M12 11v5M9.5 13.5L12 16l2.5-2.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconSettings() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+      <path d="M12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM19 12l2-1-2-3.5-2.2.5a7 7 0 00-1.7-1L14.5 5h-5L8.9 7a7 7 0 00-1.7 1L5 7.5 3 11l2 1a7 7 0 000 2l-2 1 2 3.5 2.2-.5a7 7 0 001.7 1l.6 2h5l.6-2a7 7 0 001.7-1l2.2.5 2-3.5-2-1a7 7 0 000-2z" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+const WORKBENCH_TOOLS = [
+  { key: 'review', label: '改动审查', Icon: IconReview },
+  { key: 'checkpoints', label: '检查点', Icon: IconCheckpoint },
+  { key: 'archives', label: '导出备份', Icon: IconArchive },
+  { key: 'settings', label: '设置', Icon: IconSettings },
+];
+
 function CtxRing({ percent }) {
   const r = 7;
   const c = 2 * Math.PI * r;
@@ -2627,7 +2666,8 @@ export function App() {
             );
           })}
         </div>
-        <nav className="side-tools" aria-label="工作区工具">{[['review', '改动审查'], ['checkpoints', '检查点'], ['archives', '导出备份'], ['settings', '设置']].map(([key, label]) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => openWorkbench(key)}>{label}</button>)}</nav>
+        <div className="side-dock">
+        <nav className="side-tools" aria-label="工作区工具">{WORKBENCH_TOOLS.map(({ key, label, Icon }) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => openWorkbench(key)}><Icon /><span>{label}</span></button>)}</nav>
         <div className="side-foot">
           <button
             type="button"
@@ -2652,6 +2692,7 @@ export function App() {
           >
             <IconChevron left={!collapsed} />
           </button>
+        </div>
         </div>
       </aside>
 

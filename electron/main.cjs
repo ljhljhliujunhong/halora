@@ -62,6 +62,7 @@ let reconnectTimer = null;
 let connecting = null;
 let reconnectAttempts = 0;
 let maintenance = false;
+let installUpdateTimer = null;
 const projectLocks = new Set();
 const lockKey = cwd => canonicalCwd(cwd).toLowerCase();
 const dataFile = name => path.join(app.getPath('userData'), name);
@@ -87,6 +88,32 @@ function markInterrupted() {
   const value = recovery();
   for (const turn of Object.values(value.turns || {})) if (turn.status === 'running') turn.status = 'interrupted';
   writeJson(dataFile('recovery.json'), value);
+}
+
+function watchInstallUpdate() {
+  if (!app.isPackaged || !process.env.HALORA_INSTALL_ROOT) return;
+  const root = path.resolve(process.env.HALORA_INSTALL_ROOT);
+  const executable = path.resolve(process.execPath);
+  if (!executable.toLowerCase().startsWith(root.toLowerCase() + path.sep)) return;
+  const marker = path.join(root, '.halora-update.json');
+  let handling = false;
+  installUpdateTimer = setInterval(() => {
+    if (handling || !fs.existsSync(marker)) return;
+    try {
+      const transaction = readJson(marker, null);
+      if (!transaction || !samePath(transaction.root, root) || !transaction.relaunch) return;
+      handling = true;
+      clearInterval(installUpdateTimer);
+      installUpdateTimer = null;
+      diagnostics.log(app.getPath('userData'), 'install-update', `准备安装 ${transaction.manifest?.version || '新版本'}`);
+      markInterrupted();
+      quitting = true;
+      app.quit();
+    } catch (error) {
+      diagnostics.log(app.getPath('userData'), 'install-update-error', error);
+    }
+  }, 250);
+  installUpdateTimer.unref?.();
 }
 function activeProject(cwd) {
   return runningIds().some(id => samePath(cwdOfSession(id), cwd));
@@ -1604,6 +1631,7 @@ if (process.env.SMOKE_TEST === "1") {
     process.on('uncaughtExceptionMonitor', error => diagnostics.log(app.getPath('userData'), 'main-error', error));
     hydrateQuota();
     createWindow();
+    watchInstallUpdate();
     state.grokBin = findGrokBinary();
     ensureAgent().then(() => send("state", snapshot())).catch(() => send("state", snapshot()));
     refreshQuota();
@@ -1622,6 +1650,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   if (!quitting && process.env.SMOKE_TEST !== '1') markInterrupted();
   quitting = true;
+  if (installUpdateTimer) clearInterval(installUpdateTimer);
+  installUpdateTimer = null;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   stopSessionWatch();
   stopQuotaTimers();

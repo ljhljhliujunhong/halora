@@ -56,7 +56,7 @@ select {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 18px 12px;
+  padding: 18px 12px 0;
   background:
     linear-gradient(180deg, rgba(46, 184, 201, 0.08), transparent 140px),
     #f7fafc;
@@ -80,14 +80,23 @@ select {
   flex-shrink: 0;
 }
 
-.side-foot {
+.side-dock {
   margin-top: auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.side-foot {
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding-top: 8px;
+  min-height: 32px;
 }
 
 .side.collapsed .side-foot {
@@ -101,7 +110,7 @@ select {
   justify-content: center;
   gap: 6px;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 0;
   border-radius: 10px;
   background: transparent;

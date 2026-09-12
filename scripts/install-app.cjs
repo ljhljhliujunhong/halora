@@ -11,6 +11,10 @@ const cache = path.join('E:/VsCodeProject/Agent缓存文件', 'halora-updates', 
 fs.mkdirSync(cache, { recursive: true });
 const marker = path.join(root, '.halora-update.json');
 if (fs.existsSync(marker)) throw new Error('还有待完成的更新，请先退出 Halora 并等待安装完成');
+for (const entry of fs.readdirSync(cache)) {
+  try { fs.rmSync(path.join(cache, entry), { recursive: true, force: true }); }
+  catch (error) { if (!['EBUSY', 'EACCES', 'EPERM'].includes(error.code)) throw error; }
+}
 const archive = path.join(source, 'resources', 'app.asar');
 const packed = JSON.parse(asar.extractFile(archive, 'package.json'));
 if (packed.version !== pkg.version || packed.name !== 'halora') throw new Error('打包版本与源码不一致');
@@ -44,13 +48,34 @@ const built = spawnSync(compiler, ['/nologo', '/target:winexe', '/platform:anycp
 if (built.status !== 0) throw new Error(built.stdout || built.stderr || '启动器编译失败');
 const helper = path.join(cache, `deployment-${crypto.randomUUID()}.cjs`);
 fs.copyFileSync(path.join(__dirname, 'deployment.cjs'), helper);
-const transaction = { root, stage, backup: path.join(cache, `previous-${Date.now()}`), manifest, launcher, launcherHash: deploy.hash(fs.readFileSync(launcher)), node: process.execPath, helper, marker };
+const wasRunning = deploy.running(root);
+const transaction = {
+  root,
+  stage,
+  backup: path.join(root, 'runtime', `.rollback-${crypto.randomUUID()}`),
+  manifest,
+  launcher,
+  launcherHash: deploy.hash(fs.readFileSync(launcher)),
+  node: process.execPath,
+  helper,
+  marker,
+  relaunch: wasRunning,
+};
 fs.writeFileSync(marker, JSON.stringify(transaction));
 fs.copyFileSync(launcher, path.join(root, '星环.exe'));
-if (deploy.running(root)) {
+function deferInstall() {
   const child = spawn(process.execPath, [helper, marker], { detached: true, stdio: 'ignore', windowsHide: true }); child.unref();
-  console.log(`已校验 Halora ${pkg.version}；退出应用后自动替换。`);
-} else {
-  deploy.apply(transaction);
-  console.log(`已安装并校验 Halora ${pkg.version}：${path.join(root, '星环.exe')}`);
+  console.log(`已校验 Halora ${pkg.version}；正在通知应用退出，完成替换后自动重启。`);
+}
+if (wasRunning) deferInstall();
+else {
+  try {
+    deploy.apply(transaction);
+    fs.rmSync(helper, { force: true });
+    fs.rmSync(launcher, { force: true });
+    console.log(`已安装并校验 Halora ${pkg.version}：${path.join(root, '星环.exe')}`);
+  } catch (error) {
+    if (!['EBUSY', 'EACCES', 'EPERM'].includes(error.code)) throw error;
+    deferInstall();
+  }
 }

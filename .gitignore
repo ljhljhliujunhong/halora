@@ -6,6 +6,9 @@ dist/
 release/
 pack-out/
 halora-app/
+runtime/
+halora-app-*/
+.halora-current.json*
 build/*.png
 build/*.ico
 build/ico-frames/
