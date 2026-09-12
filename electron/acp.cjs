@@ -24,14 +24,23 @@ class AcpClient extends EventEmitter {
       env: { ...process.env },
     });
 
-    const rl = readline.createInterface({ input: this.proc.stdout });
-    rl.on("line", (line) => this.onLine(line));
+    const proc = this.proc;
+    const rl = readline.createInterface({ input: proc.stdout });
+    rl.on("line", (line) => { if (this.proc === proc) this.onLine(line); });
 
     this.proc.stderr.on("data", (buf) => {
       this.emit("stderr", buf.toString());
     });
 
-    this.proc.on("exit", (code) => {
+    proc.on("error", (error) => {
+      if (this.proc !== proc) return;
+      for (const item of this.pending.values()) item.reject(error);
+      this.pending.clear();
+      this.proc = null;
+      this.emit("exit", null);
+    });
+    proc.on("exit", (code) => {
+      if (this.proc !== proc) return;
       const err = new Error(`Grok 已退出 (${code ?? "?"})`);
       for (const item of this.pending.values()) item.reject(err);
       this.pending.clear();
@@ -149,7 +158,7 @@ class AcpClient extends EventEmitter {
       "initialize",
       {
         protocolVersion: 1,
-        clientInfo: { name: "halora", title: "Halora", version: "0.1.0" },
+        clientInfo: { name: "halora", title: "Halora", version: require('../package.json').version },
         clientCapabilities: {},
       },
       { timeoutMs: 20000 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -27,33 +27,13 @@ internal static class Program
             }
         }
 
-        MessageBox.Show("找不到 Halora。", "Halora");
+        MessageBox.Show("还没有打包。先在项目目录运行 npm run pack。", "星环");
     }
 
     static IEnumerable<string> Candidates(string baseDir)
     {
-        yield return Path.Combine(baseDir, "Halora.exe");
-        yield return Path.Combine(baseDir, "Xinghuan.exe");
-        yield return Path.Combine(baseDir, "Gongfang.exe");
         yield return Path.Combine(baseDir, "halora-app", "Halora.exe");
-        yield return Path.Combine(baseDir, "xinghuan-app", "Xinghuan.exe");
-        yield return Path.Combine(baseDir, "gongfang-app", "Xinghuan.exe");
-        yield return Path.Combine(baseDir, "gongfang-app", "Gongfang.exe");
-
-        string projects = @"E:\VsCodeProject";
-        if (Directory.Exists(projects))
-        {
-            string[] dirs = new string[0];
-            try { dirs = Directory.GetDirectories(projects); }
-            catch { dirs = new string[0]; }
-            foreach (string dir in dirs)
-            {
-                yield return Path.Combine(dir, "halora-app", "Halora.exe");
-                yield return Path.Combine(dir, "xinghuan-app", "Xinghuan.exe");
-                yield return Path.Combine(dir, "gongfang-app", "Xinghuan.exe");
-                yield return Path.Combine(dir, "gongfang-app", "Gongfang.exe");
-            }
-        }
+        yield return Path.Combine(baseDir, "Halora.exe");
     }
 
     static void StartApp(string app)

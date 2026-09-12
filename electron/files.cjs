@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { fileURLToPath } = require("node:url");
+const { fileToImage } = require("./media.cjs");
 
 const SKIP = new Set([
   "node_modules",
@@ -124,4 +126,115 @@ function resolveMentions(cwd, rels) {
   return out;
 }
 
-module.exports = { searchFiles, resolveMentions, collectMentions };
+function classifyDroppedPath(filePath) {
+  if (!filePath) return null;
+  let resolved = "";
+  try {
+    resolved = path.resolve(String(filePath));
+  } catch {
+    return null;
+  }
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    return null;
+  }
+  const name = path.basename(resolved);
+  const idBase = resolved.toLowerCase();
+  if (stat.isDirectory()) {
+    return { kind: "folder", name, path: resolved, id: `folder:${idBase}` };
+  }
+  if (!stat.isFile()) return null;
+  const img = fileToImage(resolved);
+  if (img) return { kind: "image", ...img, id: `image:${idBase}` };
+  return { kind: "file", name, path: resolved, id: `file:${idBase}` };
+}
+
+function stripResourceHint(raw) {
+  let value = String(raw || "").trim();
+  value = value.replace(/^['"`]+|['"`]+$/g, "");
+  if (/^file:/i.test(value)) {
+    try {
+      value = fileURLToPath(value);
+    } catch {
+      value = value.replace(/^file:\/\//i, "");
+    }
+  }
+  return value.replace(/[?#].*$/, "").trim();
+}
+
+function findByBasename(root, base, limit = 5000) {
+  const target = String(base || "").toLowerCase();
+  if (!root || !target) return null;
+  const stack = [root];
+  let seen = 0;
+  while (stack.length && seen < limit) {
+    const dir = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      seen += 1;
+      if (SKIP.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (entry.isFile() && entry.name.toLowerCase() === target) return full;
+    }
+  }
+  return null;
+}
+
+function locateResource(cwd, hint) {
+  const raw = stripResourceHint(hint);
+  if (!raw || raw.length > 500) return null;
+  const candidates = [];
+  if (path.isAbsolute(raw) || /^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
+    candidates.push(raw);
+  }
+  if (cwd) candidates.push(path.resolve(cwd, raw));
+  for (const item of candidates) {
+    try {
+      if (item && fs.existsSync(item)) return path.resolve(item);
+    } catch {
+      // skip a malformed path
+    }
+  }
+  if (!cwd) return null;
+  const base = path.basename(raw);
+  if (!base || base === "." || base === "..") return null;
+  const hits = searchFiles(cwd, base, { hidden: true });
+  const exact = hits.find((item) => String(item.name || "").toLowerCase() === base.toLowerCase());
+  if (exact?.path) return path.resolve(cwd, exact.path);
+  return findByBasename(cwd, base);
+}
+
+function classifyDroppedPaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (const item of paths || []) {
+    const next = classifyDroppedPath(item);
+    if (!next?.path) continue;
+    const key = String(next.path).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(next);
+  }
+  return out.slice(0, 16);
+}
+
+module.exports = {
+  searchFiles,
+  resolveMentions,
+  collectMentions,
+  classifyDroppedPath,
+  classifyDroppedPaths,
+  locateResource,
+  stripResourceHint,
+};

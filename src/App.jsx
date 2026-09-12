@@ -14,9 +14,26 @@ import {
   parseSlash,
   slashQuery,
 } from "./composer.js";
+import { looksLikeFile, extractFileHint } from "./resource-hint.mjs";
 import brandIcon from "./brand.png";
+import { Workbench } from './Workbench.jsx';
 
 const api = window.workshop;
+function storedComposer() {
+  try { return JSON.parse(localStorage.getItem('halora.composer') || '{}'); } catch { return {}; }
+}
+function brandStorage(suffix) {
+  const key = `halora.${suffix}`;
+  if (localStorage.getItem(key) != null) return localStorage.getItem(key);
+  for (const old of Object.keys(localStorage)) {
+    if (old !== key && old.endsWith(`.${suffix}`)) {
+      const value = localStorage.getItem(old);
+      localStorage.setItem(key, value); localStorage.removeItem(old);
+      return value;
+    }
+  }
+  return null;
+}
 const PreviewContext = createContext(null);
 
 function usePreview() {
@@ -53,7 +70,7 @@ function placeKeys(keys, fromKey, overKey, edge) {
 
 function readOpenProjects() {
   try {
-    const rows = JSON.parse(localStorage.getItem("gongfang.projectsOpen") || "[]");
+    const rows = JSON.parse(brandStorage('projectsOpen') || "[]");
     return new Set(Array.isArray(rows) ? rows.map(projectKey) : []);
   } catch {
     return new Set();
@@ -62,7 +79,7 @@ function readOpenProjects() {
 
 function writeOpenProjects(open) {
   try {
-    localStorage.setItem("gongfang.projectsOpen", JSON.stringify([...open]));
+    localStorage.setItem("halora.projectsOpen", JSON.stringify([...open]));
   } catch {
     // ignore
   }
@@ -123,6 +140,31 @@ function resolveLocalPath(filePath, cwd) {
   return `${String(cwd).replace(/[\\/]+$/, "")}${sep}${raw.replace(/^[\\/]+/, "")}`;
 }
 
+function resourceHintFromEvent(event) {
+  const root = event.currentTarget;
+  const target = event.target;
+  if (!target || !root?.contains(target)) return "";
+  const node = target.closest?.("img, a[href], code, .file-pill, .chip, .chat-img");
+  if (!node || !root.contains(node)) return "";
+  if (node.matches("img, .chat-img")) {
+    const stored = String(node.getAttribute("data-path") || "").trim();
+    if (stored) return stored;
+    return looksLikeFile(node.getAttribute("alt")) || looksLikeFile(node.getAttribute("title")) || "";
+  }
+  if (node.matches(".file-pill, .chip")) {
+    const stored = String(node.getAttribute("data-path") || "").trim();
+    if (stored) return stored;
+    return extractFileHint(node.textContent);
+  }
+  if (node.matches("a[href]")) {
+    const href = node.getAttribute("href") || "";
+    if (/^file:/i.test(href)) return href;
+    return looksLikeFile(href) || extractFileHint(node.textContent);
+  }
+  if (node.matches("code") && !node.closest("pre")) return extractFileHint(node.textContent);
+  return "";
+}
+
 function ChatImage({ image, cwd }) {
   const openPreview = usePreview();
   const [src, setSrc] = useState(image.src || "");
@@ -154,6 +196,7 @@ function ChatImage({ image, cwd }) {
       className="chat-img"
       src={src}
       alt={image.name || ""}
+      data-path={image.path || ""}
       onClick={() => openPreview?.({ src, name: image.name || "" })}
     />
   );
@@ -208,7 +251,22 @@ function mergeAttachments(prev, next) {
     if (key) seen.add(key);
     out.push(item);
   }
-  return out.slice(0, 8);
+  return out.slice(0, 16);
+}
+
+function isFileDrag(event) {
+  return [...(event.dataTransfer?.types || [])].includes("Files");
+}
+
+function droppedFiles(dt) {
+  const fromItems = [];
+  for (const item of [...(dt?.items || [])]) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile?.();
+    if (file) fromItems.push(file);
+  }
+  if (fromItems.length) return fromItems;
+  return [...(dt?.files || [])].filter(Boolean);
 }
 
 function fileToAttachment(file) {
@@ -441,13 +499,14 @@ function CtxRing({ percent }) {
   const dash = (Math.max(0, Math.min(100, Number(percent) || 0)) / 100) * c;
   return (
     <svg className="ctx-ring" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">
-      <circle cx="9" cy="9" r={r} fill="none" stroke="#d5dce6" strokeWidth="2.4" />
+      <circle className="ctx-ring-track" cx="9" cy="9" r={r} fill="none" strokeWidth="2.4" />
       <circle
         cx="9"
         cy="9"
         r={r}
         fill="none"
-        stroke="currentColor"
+        className="ctx-ring-progress"
+        opacity={dash > 0 ? 1 : 0}
         strokeWidth="2.4"
         strokeDasharray={`${dash} ${c}`}
         strokeLinecap="round"
@@ -875,8 +934,18 @@ export function App() {
   const [threads, setThreads] = useState({});
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState([]);
-  const [permission, setPermission] = useState(null);
+  const [permissionError, setPermissionError] = useState('');
   const [error, setError] = useState("");
+  const [workbenchPage, setWorkbenchPage] = useState('');
+  const [permissionItems, setPermissionItems] = useState([]);
+  const [selectedPermission, setSelectedPermission] = useState(null);
+  const [composerReady, setComposerReady] = useState(false);
+  const composerSaveRef = useRef(null);
+  const composerKeyRef = useRef(null);
+  const steeringStore = useRef({});
+  const recoveredComposers = useRef(storedComposer());
+  const prefs = appState.preferences || {};
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches || false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [renameId, setRenameId] = useState("");
@@ -889,7 +958,7 @@ export function App() {
   const [drag, setDrag] = useState(null);
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem("gongfang.sidebar") === "1";
+      return brandStorage('sidebar') === "1";
     } catch {
       return false;
     }
@@ -933,6 +1002,7 @@ export function App() {
   const dragLive = useRef(null);
   const skipClick = useRef(false);
   const queueRef = useRef([]);
+  const addDroppedRef = useRef(async () => {});
   sessionIdRef.current = appState.sessionId;
   cwdRef.current = appState.cwd;
   runningRef.current = new Set(appState.runningIds || []);
@@ -946,6 +1016,24 @@ export function App() {
       try {
         const next = await api.getState();
         setAppState((prev) => ({ ...prev, ...next }));
+        const saved = { ...(next.composers || {}) };
+        for (const [key, row] of Object.entries(recoveredComposers.current)) {
+          if (!saved[key] || row.updatedAt > saved[key].updatedAt) saved[key] = row;
+        }
+        recoveredComposers.current = saved;
+        for (const [key, row] of Object.entries(saved)) {
+          draftsRef.current[key] = row.draft || '';
+          filesRef.current[key] = row.attachments || [];
+          queuesStore.current[key] = (row.queue || []).filter(item => !(next.acceptedItems || []).includes(item.id) && !(next.interrupted || []).some(t => t.itemId && t.itemId === item.id));
+        }
+        const key = next.sessionId || `project:${next.cwd || ''}`;
+        composerKeyRef.current = key;
+        setDraft(draftsRef.current[key] || '');
+        setAttachments(filesRef.current[key] || []);
+        setQueue(queuesStore.current[key] || []);
+        queueRef.current = queuesStore.current[key] || [];
+        setPermissionItems(next.permissions || []);
+        setComposerReady(true);
         if (typeof next.sidebarCollapsed === "boolean") setCollapsed(next.sidebarCollapsed);
       } catch (err) {
         setError(friendlyError(err));
@@ -958,6 +1046,7 @@ export function App() {
           setCollapsed(event.payload.sidebarCollapsed);
         }
       }
+      if (event.type === 'permissions') setPermissionItems(event.payload || []);
       if (event.type === "transcript") {
         const payload = event.payload;
         const sid = payload?.sessionId || sessionIdRef.current;
@@ -1060,10 +1149,33 @@ export function App() {
           }
         }
       }
-      if (event.type === "permission") setPermission(event.payload);
       if (event.type === "error") setError(event.payload?.message || "出了点问题");
     });
     return () => off();
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => setSystemDark(media.matches);
+    media.addEventListener('change', onChange); return () => media.removeEventListener('change', onChange);
+  }, []);
+  useEffect(() => {
+    if (!composerReady) return;
+    const key = appState.sessionId || `project:${appState.cwd || ''}`;
+    if (composerKeyRef.current !== key) {
+      if (!busy && composerKeyRef.current?.startsWith('project:') && appState.sessionId) composerKeyRef.current = key;
+      else return;
+    }
+    const value = { draft, attachments, queue, cwd: appState.cwd, updatedAt: Date.now() };
+    recoveredComposers.current[key] = value;
+    composerSaveRef.current = { key, value };
+    try { localStorage.setItem('halora.composer', JSON.stringify(recoveredComposers.current)); } catch {}
+    const timer = setTimeout(() => api.saveComposer?.({ key, value }).catch(e => setError(`草稿保存失败：${friendlyError(e)}`)), 250);
+    return () => { clearTimeout(timer); api.saveComposer?.({ key, value }).catch(() => {}); };
+  }, [draft, attachments, queue, appState.sessionId, appState.cwd, composerReady, busy]);
+  useEffect(() => {
+    const flush = () => { if (composerSaveRef.current) api.saveComposerSync?.(composerSaveRef.current); };
+    window.addEventListener('beforeunload', flush); return () => window.removeEventListener('beforeunload', flush);
   }, []);
 
   useEffect(() => {
@@ -1258,6 +1370,7 @@ export function App() {
   const menuOpen = Boolean(menuItems.length);
   const context = appState.context;
   const quota = appState.quota;
+  const permission = permissionItems.find(p => p.requestId === selectedPermission) || permissionItems[0];
   const quotaReset = quota?.resetAt ? formatReset(quota.resetAt) : { when: "", left: "" };
   const permissionMode = appState.permissionMode || "agent";
   const currentMode = MODES.find((item) => item.id === permissionMode) || MODES[0];
@@ -1390,6 +1503,54 @@ export function App() {
     setAttachments((prev) => mergeAttachments(prev, next));
   };
 
+  const addDropped = async (dt) => {
+    const list = droppedFiles(dt);
+    if (!list.length) return;
+    const paths = [];
+    const blobs = [];
+    for (const file of list) {
+      const filePath = api.pathForFile?.(file) || "";
+      if (filePath) paths.push(filePath);
+      else if (isImageFile(file)) blobs.push(file);
+    }
+    const resolved = paths.length && api.resolveDrops ? await api.resolveDrops(paths) : [];
+    const next = [...(resolved || [])];
+    for (const file of blobs) next.push(await fileToAttachment(file));
+    if (!next.length) return;
+    setAttachments((prev) => mergeAttachments(prev, next));
+  };
+  addDroppedRef.current = addDropped;
+
+  useEffect(() => {
+    const over = (event) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragging(true);
+    };
+    const drop = async (event) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDragging(false);
+      await addDroppedRef.current(event.dataTransfer);
+    };
+    const end = () => setDragging(false);
+    const leave = (event) => {
+      if (!event.relatedTarget) end();
+    };
+    window.addEventListener("dragover", over, true);
+    window.addEventListener("drop", drop, true);
+    window.addEventListener("dragend", end, true);
+    window.addEventListener("dragleave", leave, true);
+    return () => {
+      window.removeEventListener("dragover", over, true);
+      window.removeEventListener("drop", drop, true);
+      window.removeEventListener("dragend", end, true);
+      window.removeEventListener("dragleave", leave, true);
+    };
+  }, []);
+
   const setProjectOpen = (cwd, force) => {
     const key = projectKey(cwd);
     if (!key) return;
@@ -1430,18 +1591,26 @@ export function App() {
     const cur = queuesStore.current[id] || [];
     const next = typeof updater === "function" ? updater(cur) : updater;
     queuesStore.current[id] = next;
+    if (id) {
+      const value = { ...(recoveredComposers.current[id] || {}), queue: next, updatedAt: Date.now() };
+      recoveredComposers.current[id] = value;
+      api.saveComposer?.({key:id,value}).catch(e => setError(friendlyError(e)));
+      try { localStorage.setItem('halora.composer', JSON.stringify(recoveredComposers.current)); } catch {}
+    }
     if (id === sessionIdRef.current) setQueueAndRef(next);
     return next;
   };
 
   const parkComposer = (id) => {
-    if (!id) return;
+    id ||= `project:${appState.cwd || ''}`;
     draftsRef.current[id] = draft;
     filesRef.current[id] = attachments;
     queuesStore.current[id] = queueRef.current;
   };
 
   const restoreComposer = (id) => {
+    id ||= `project:${appState.cwd || ''}`;
+    composerKeyRef.current = id;
     setDraft(id ? draftsRef.current[id] || "" : "");
     setAttachments(id ? filesRef.current[id] || [] : []);
     const next = id ? queuesStore.current[id] || [] : [];
@@ -1463,15 +1632,16 @@ export function App() {
   };
 
   const openFolder = async () => {
+    setWorkbenchPage('');
     setShowSkills(false);
     setError("");
     const cwd = await api.pickFolder();
     if (!cwd) return;
     parkComposer(appState.sessionId);
-    restoreComposer(null);
     setBusy(true);
     try {
       const next = await api.openProject(cwd);
+      restoreComposer(`project:${cwd}`);
       setAppState((prev) => ({ ...prev, ...next }));
       setProjectOpen(cwd, true);
     } catch (err) {
@@ -1482,6 +1652,7 @@ export function App() {
   };
 
   const newChat = async (cwd) => {
+    setWorkbenchPage('');
     setShowSkills(false);
     const target = cwd || appState.cwd;
     if (!target) return;
@@ -1508,7 +1679,7 @@ export function App() {
     setCollapsed((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem("gongfang.sidebar", next ? "1" : "0");
+        localStorage.setItem("halora.sidebar", next ? "1" : "0");
       } catch {
         // ignore
       }
@@ -1529,16 +1700,17 @@ export function App() {
   }, []);
 
   const loadChat = async (id, cwd) => {
+    setWorkbenchPage('');
     if (!id || id === appState.sessionId) return;
     setShowSkills(false);
     setError("");
     stickBottom.current = true;
     pinLock.current = Date.now() + 800;
     parkComposer(appState.sessionId);
-    restoreComposer(id);
     setBusy(true);
     try {
       const next = await api.loadChat(id, cwd);
+      restoreComposer(id);
       setAppState((prev) => ({ ...prev, ...next }));
       if (cwd) setProjectOpen(cwd, true);
     } catch (err) {
@@ -1553,7 +1725,7 @@ export function App() {
     const text = String(override ?? draft).trim();
     const images = usingDraft
       ? attachments
-          .filter((item) => item.kind !== "file")
+          .filter((item) => item.kind === "image")
           .map((item) => ({
             name: item.name,
             mime: item.mime,
@@ -1564,8 +1736,8 @@ export function App() {
       : [];
     const files = usingDraft
       ? attachments
-          .filter((item) => item.kind === "file" && item.path)
-          .map((item) => ({ name: item.name, path: item.path }))
+          .filter((item) => (item.kind === "file" || item.kind === "folder") && item.path)
+          .map((item) => ({ name: item.name, path: item.path, kind: item.kind }))
       : [];
     if (!text && !images.length && !files.length) return null;
     let outbound = text;
@@ -1600,10 +1772,11 @@ export function App() {
         await api.compact(item.hint || "", id);
       } catch (err) {
         if (!isCancelError(err)) setError(friendlyError(err));
+        return false;
       } finally {
         setCompactPhases((prev) => (prev[id] === "start" ? { ...prev, [id]: "" } : prev));
       }
-      return;
+      return true;
     }
     if (id) {
       setThreads((prev) => ({
@@ -1628,9 +1801,12 @@ export function App() {
         mentions: item.mentions,
         sessionId: id,
         cwd,
+        itemId: item.id,
       });
+      return true;
     } catch (err) {
       if (!isCancelError(err)) setError(friendlyError(err));
+      return false;
     }
   };
 
@@ -1642,11 +1818,15 @@ export function App() {
       return;
     }
     sendingStore.current[id] = true;
+    let success = false;
     try {
-      await deliver(item, id);
+      success = await deliver(item, id);
     } finally {
       sendingStore.current[id] = false;
     }
+    const steering = steeringStore.current[id];
+    delete steeringStore.current[id];
+    if (!success && !steering) return;
     const next = (queuesStore.current[id] || [])[0];
     if (!next) return;
     queueFor(id, (prev) => prev.slice(1));
@@ -1675,7 +1855,7 @@ export function App() {
     });
   };
 
-  const sendPrompt = (override) => {
+  const sendPrompt = async (override) => {
     if (!appState.cwd || busy) return;
     const usingDraft = override == null;
     const parsed = parseSlash(override ?? draft);
@@ -1720,9 +1900,22 @@ export function App() {
         compactChat(parsed.rest);
         return;
       }
+      if (cmd?.name === 'rewind') { setDraft(''); setWorkbenchPage('checkpoints'); return; }
     }
     const item = takeComposer(override);
     if (!item) return;
+    let targetId = appState.sessionId;
+    if (!targetId) {
+      setBusy(true);
+      try {
+        const next = await api.newChat(appState.cwd);
+        targetId = next.sessionId;
+        item.sessionId = targetId;
+        composerKeyRef.current = targetId;
+        setAppState(prev => ({...prev,...next}));
+      } catch (error) { setError(friendlyError(error)); return; }
+      finally { setBusy(false); }
+    }
     if (usingDraft) {
       setDraft("");
       setAttachments([]);
@@ -1732,22 +1925,28 @@ export function App() {
     setShowQuota(false);
     setShowMode(false);
     setShowModel(false);
-    if (sessionBusy(appState.sessionId)) {
+    if (sessionBusy(targetId)) {
       setQueueAndRef((prev) => [...prev, item]);
       return;
     }
-    sendNow(item, appState.sessionId);
+    sendNow(item, targetId);
   };
 
   const send = () => sendPrompt();
 
   const steer = async (id) => {
-    setQueueAndRef((prev) => {
-      const item = prev.find((row) => row.id === id);
-      if (!item) return prev;
-      return [item, ...prev.filter((row) => row.id !== id)];
-    });
-    await stopRun();
+    const sid = sessionIdRef.current;
+    const item = queueRef.current.find(row => row.id === id);
+    if (!item) return;
+    if (sendingStore.current[sid]) {
+      queueFor(sid, rows => [item, ...rows.filter(row => row.id !== id)]);
+      steeringStore.current[sid] = true;
+      await stopRun();
+    } else {
+      await stopRun();
+      queueFor(sid, rows => rows.filter(row => row.id !== id));
+      sendNow(item, sid);
+    }
   };
 
   const removeQueued = (id) => {
@@ -1803,7 +2002,7 @@ export function App() {
       else fillSlash(menuItems[suggestIndex] || menuItems[0]);
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && (prefs.sendKey !== 'ctrl-enter' || event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       send();
     }
@@ -1868,11 +2067,17 @@ export function App() {
   const openMenu = (event, payload) => {
     event.preventDefault();
     event.stopPropagation();
-    const width = 168;
-    const height = 132;
+    const width = payload?.kind === "file" ? 176 : 168;
+    const height = payload?.kind === "file" ? 120 : 132;
     const x = Math.min(event.clientX, window.innerWidth - width - 8);
     const y = Math.min(event.clientY, window.innerHeight - height - 8);
     setMenu({ ...payload, x: Math.max(8, x), y: Math.max(8, y) });
+  };
+
+  const onResourceMenu = (event) => {
+    const hint = resourceHintFromEvent(event);
+    if (!hint) return;
+    openMenu(event, { kind: "file", hint });
   };
 
   const cancelRename = () => {
@@ -1934,43 +2139,57 @@ export function App() {
   };
 
   const runMenu = async (action) => {
+    const current = menu;
     setMenu(null);
     try {
+      if (action === "show-in-folder") {
+        await api.showInFolder({ hint: current?.hint, cwd: appState.cwd });
+        return;
+      }
+      if (action === "open-path") {
+        await api.openPath({ hint: current?.hint, cwd: appState.cwd });
+        return;
+      }
+      if (action === "copy-path") {
+        const text = current?.hint || "";
+        if (text) await navigator.clipboard.writeText(text);
+        return;
+      }
       if (action === "pin-project") {
-        const next = await api.pinProject(menu.cwd, !menu.pinned);
+        const next = await api.pinProject(current.cwd, !current.pinned);
         setAppState((prev) => ({ ...prev, ...next }));
         return;
       }
       if (action === "edit-project") {
-        const item = projects.find((row) => sameFolder(row.cwd, menu.cwd));
+        const item = projects.find((row) => sameFolder(row.cwd, current.cwd));
         if (item) startProjectRename(item);
         return;
       }
       if (action === "delete-project") {
         setConfirm({
           kind: "project",
-          cwd: menu.cwd,
-          title: `删除「${menu.name}」？`,
+          cwd: current.cwd,
+          title: `删除「${current.name}」？`,
           detail: "只从列表里拿掉，文件夹不会删。",
         });
         return;
       }
       if (action === "pin-chat") {
-        const next = await api.pinChat(menu.id, !menu.pinned);
+        const next = await api.pinChat(current.id, !current.pinned);
         setAppState((prev) => ({ ...prev, ...next }));
         return;
       }
       if (action === "edit-chat") {
-        const session = allSessions.find((row) => row.id === menu.id);
+        const session = allSessions.find((row) => row.id === current.id);
         if (session) startRename(session);
         return;
       }
       if (action === "delete-chat") {
         setConfirm({
           kind: "chat",
-          id: menu.id,
-          cwd: menu.cwd,
-          title: `删除「${menu.name}」？`,
+          id: current.id,
+          cwd: current.cwd,
+          title: `删除「${current.name}」？`,
           detail: "删掉后不能恢复。",
         });
       }
@@ -2097,7 +2316,7 @@ export function App() {
             }}
             aria-label="切换模型"
           >
-            <span className="model-name">{currentModel.name}</span>
+            <span className="model-name">{currentModel.name || currentModel.id}</span>
             <span className="model-chev">
               <IconChevron down />
             </span>
@@ -2111,7 +2330,7 @@ export function App() {
                   className={`model-item ${model.id === appState.modelId ? "active" : ""}`}
                   onClick={() => changeModel(model.id)}
                 >
-                  <span>{model.name}</span>
+                  <span>{model.name || model.id}</span>
                   <span className="mode-check">{model.id === appState.modelId ? "✓" : ""}</span>
                 </button>
               ))}
@@ -2129,7 +2348,7 @@ export function App() {
 
   return (
     <PreviewContext.Provider value={setPreview}>
-    <div className={`app ${collapsed ? "collapsed" : ""}`}>
+    <div className={`app ${collapsed ? "collapsed" : ""}`} data-theme={prefs.theme === 'system' ? (systemDark ? 'dark' : 'light') : prefs.theme || 'light'} style={{ '--chat-font': `${prefs.fontSize || 14}px` }}>
       <aside className={`side ${collapsed ? "collapsed" : ""}`}>
         <div className="side-top">
           <div className="brand">
@@ -2372,11 +2591,12 @@ export function App() {
             );
           })}
         </div>
+        <nav className="side-tools" aria-label="工作区工具">{[['review', '改动审查'], ['checkpoints', '检查点'], ['archives', '导出备份'], ['settings', '设置']].map(([key, label]) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => { setWorkbenchPage(key); setShowSkills(false); }}>{label}</button>)}</nav>
         <div className="side-foot">
           <button
             type="button"
             className={`side-skills ${showSkills ? "active" : ""}`}
-            onClick={() => setShowSkills((open) => !open)}
+            onClick={() => { setWorkbenchPage(''); setShowSkills((open) => !open); }}
             title="技能"
             aria-label="技能"
           >
@@ -2395,8 +2615,10 @@ export function App() {
         </div>
       </aside>
 
-      <main className="main">
-        {showSkills ? (
+      <main className="main" onContextMenu={onResourceMenu}>
+        {appState.connection === 'disconnected' && <div className="recovery-bar"><span>{appState.everReady ? 'Grok 连接已断开，已保存当前对话。' : appState.grokFound ? '还没连上 Grok。' : '还没找到 Grok Build。'}</span><button className="btn ghost" onClick={() => api.reconnect().then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>重新连接</button></div>}
+        {(appState.interrupted || []).map(turn => <div className="recovery-bar" key={turn.id}><span>上次任务中断：{turn.prompt?.slice(0, 60) || (turn.compact ? '压缩对话' : '执行任务')}</span><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); }}>查看对话</button><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); setDraft('请检查上次任务的执行进度，继续完成尚未完成的部分。'); inputRef.current?.focus(); }}>准备继续</button><button className="btn ghost" onClick={() => api.dismissRecovery(turn.id).then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>忽略</button></div>)}
+        {workbenchPage ? <Workbench key={`${workbenchPage}:${appState.cwd}:${appState.sessionId}`} page={workbenchPage} state={appState} onState={next => setAppState(p => ({ ...p, ...next }))} onClose={() => setWorkbenchPage('')} /> : showSkills ? (
           <section className="skills-page">
             <div className="skills-head">
               <h1>技能</h1>
@@ -2525,7 +2747,11 @@ export function App() {
                     {message.files?.length ? (
                       <div className="file-pills">
                         {message.files.map((file, index) => (
-                          <span key={file.path || index} className="file-pill">
+                          <span
+                            key={file.path || index}
+                            className="file-pill"
+                            data-path={file.path || ""}
+                          >
                             {file.name || file.path}
                           </span>
                         ))}
@@ -2588,26 +2814,23 @@ export function App() {
                 event.preventDefault();
                 send();
               }}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDragging(true);
-              }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={async (event) => {
-                event.preventDefault();
-                setDragging(false);
-                await addFiles(event.dataTransfer.files);
-              }}
               onPaste={onPaste}
             >
               {attachments.length ? (
                 <div className="chips">
                   {attachments.map((item) => (
-                    <div key={item.id} className={`chip ${item.kind === "file" ? "file" : ""}`}>
-                      {item.kind === "file" ? (
-                        <span className="chip-name">{item.name}</span>
+                    <div
+                      key={item.id}
+                      className={`chip ${item.kind === "file" || item.kind === "folder" ? "file" : ""}`}
+                      data-path={item.path || ""}
+                    >
+                      {item.kind === "file" || item.kind === "folder" ? (
+                        <span className="chip-name">
+                          {item.kind === "folder" ? <IconFolder /> : null}
+                          <span>{item.name}</span>
+                        </span>
                       ) : (
-                        <img src={item.src} alt="" />
+                        <ChatImage image={item} />
                       )}
                       <button
                         type="button"
@@ -2625,6 +2848,7 @@ export function App() {
               ) : null}
               {queue.length ? (
                 <div className="queue">
+                  {!appState.running && <button type="button" className="btn ghost" onClick={() => { const first = queue[0]; queueFor(appState.sessionId, rows => rows.slice(1)); sendNow(first, appState.sessionId); }}>继续发送队列（{queue.length}）</button>}
                   {queue.map((item) => (
                     <div key={item.id} className="queue-row">
                       <div className="queue-main">
@@ -2717,19 +2941,22 @@ export function App() {
                         }}
                         title="额度"
                       >
-                        <CtxRing percent={quota.percent} />
+                        <CtxRing percent={quota.percent ?? 0} />
                         <span>
-                          {quota.window} {quota.percent}%
+                          {quota.percent == null ? '额度暂不可用' : `${quota.window || '额度'} ${quota.percent}%${quota.status === 'stale' ? ' · 缓存' : ''}`}
                         </span>
                       </button>
                       {showQuota ? (
                         <div className="ctx-pop quota-pop">
                           <div className="ctx-head">
                             <span>{quota.window}已用</span>
-                            <b>{quota.percent}%</b>
+                            <b>{quota.percent == null ? '未知' : `${quota.percent}%`}</b>
                           </div>
                           {quota.plan ? <CtxRow label="方案" value={quota.plan} /> : null}
-                          <CtxRow label="剩余" value={`${Math.max(0, 100 - quota.percent)}%`} />
+                          {quota.percent != null && <CtxRow label="剩余" value={`${Math.max(0, 100 - quota.percent)}%`} />}
+                          {quota.error && <p className="ctx-note">{quota.error}</p>}
+                          {quota.updatedAt && <CtxRow label="更新于" value={new Date(quota.updatedAt).toLocaleString()} />}
+                          <button type="button" className="ctx-compact" onClick={() => api.refreshQuota().then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>刷新额度</button>
                           {Number.isFinite(quota.resets) ? (
                             <CtxRow label="重置卡" value={`${quota.resets} 张`} />
                           ) : null}
@@ -2894,6 +3121,18 @@ export function App() {
                 删除
               </button>
             </>
+          ) : menu.kind === "file" ? (
+            <>
+              <button type="button" onMouseDown={() => runMenu("open-path")}>
+                打开
+              </button>
+              <button type="button" onMouseDown={() => runMenu("show-in-folder")}>
+                在文件夹中显示
+              </button>
+              <button type="button" onMouseDown={() => runMenu("copy-path")}>
+                复制路径
+              </button>
+            </>
           ) : (
             <>
               <button type="button" onMouseDown={() => runMenu("pin-chat")}>
@@ -2934,20 +3173,22 @@ export function App() {
       {permission ? (
         <div className="overlay">
           <div className="modal">
+            <div className="permission-tabs">{permissionItems.map(item => <button key={item.requestId} className={`btn ${item === permission ? 'primary' : 'ghost'}`} onClick={() => { setSelectedPermission(item.requestId); setPermissionError(''); }}>{item.sessionTitle || item.sessionId?.slice(0, 8) || '当前对话'}</button>)}</div>
+            <p className="permission-origin">{permission.cwd} · {permissionItems.length} 项待处理</p>
             <h2>{permission.title}</h2>
+            {permissionError && <p role="alert">{permissionError}</p>}
             {inputPreview(permission.input) ? <code>{inputPreview(permission.input)}</code> : null}
             <div className="modal-actions">
               {(permission.options?.length
                 ? permission.options
                 : [
-                    { id: "allow-once", name: "允许一次", kind: "allow_once" },
-                    { id: "reject-once", name: "拒绝", kind: "reject_once" },
+                    { id: "__cancel__", name: "取消请求", kind: "reject_once" },
                   ]
               ).map((option) => (
                 <button
                   key={option.id}
                   className={`btn ${optionTone(option)}`}
-                  onClick={() => api.answerPermission(permission.requestId, option.id)}
+                  onClick={() => api.answerPermission(permission.requestId, option.id).catch(e => setPermissionError(friendlyError(e)))}
                 >
                   {optionLabel(option)}
                 </button>

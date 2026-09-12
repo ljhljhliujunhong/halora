@@ -2,6 +2,27 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("workshop", {
   getState: () => ipcRenderer.invoke("get-state"),
+  saveComposer: (payload) => ipcRenderer.invoke('save-composer', payload),
+  saveComposerSync: (payload) => ipcRenderer.sendSync('save-composer-sync', payload),
+  savePreferences: (value) => ipcRenderer.invoke('save-preferences', value),
+  reconnect: () => ipcRenderer.invoke('reconnect'),
+  dismissRecovery: (id) => ipcRenderer.invoke('dismiss-recovery', id),
+  refreshQuota: () => ipcRenderer.invoke('refresh-quota'),
+  review: (cwd) => ipcRenderer.invoke('review', cwd),
+  reviewDiff: (value) => ipcRenderer.invoke('review-diff', value),
+  reviewStage: (value) => ipcRenderer.invoke('review-stage', value),
+  reviewCommit: (value) => ipcRenderer.invoke('review-commit', value),
+  reviewSync: (value) => ipcRenderer.invoke('review-sync', value),
+  checkpoints: (cwd) => ipcRenderer.invoke('checkpoints', cwd),
+  createCheckpoint: (value) => ipcRenderer.invoke('create-checkpoint', value),
+  previewRestore: (value) => ipcRenderer.invoke('preview-restore', value),
+  restoreCheckpoint: (value) => ipcRenderer.invoke('restore-checkpoint', value),
+  rewindPoints: (value) => ipcRenderer.invoke('rewind-points', value),
+  rewindExecute: (value) => ipcRenderer.invoke('rewind-execute', value),
+  exportChat: (value) => ipcRenderer.invoke('export-chat', value),
+  backupCreate: () => ipcRenderer.invoke('backup-create'),
+  backupInspect: () => ipcRenderer.invoke('backup-inspect'),
+  backupRestore: () => ipcRenderer.invoke('backup-restore'),
   pickFolder: () => ipcRenderer.invoke("pick-folder"),
   openProject: (cwd) => ipcRenderer.invoke("open-project", cwd),
   newChat: (cwd) => ipcRenderer.invoke("new-chat", cwd || null),
@@ -25,6 +46,7 @@ contextBridge.exposeInMainWorld("workshop", {
     ipcRenderer.invoke("compact", sessionId ? { hint, sessionId } : hint),
   pickImages: () => ipcRenderer.invoke("pick-files"),
   pickFiles: () => ipcRenderer.invoke("pick-files"),
+  resolveDrops: (paths) => ipcRenderer.invoke("resolve-drops", paths),
   pathForFile: (file) => {
     try {
       return webUtils.getPathForFile(file) || "";
@@ -34,6 +56,10 @@ contextBridge.exposeInMainWorld("workshop", {
   },
   mediaSrc: (filePath) => ipcRenderer.invoke("media-src", filePath),
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
+  showInFolder: (hint, cwd) =>
+    ipcRenderer.invoke("show-in-folder", typeof hint === "object" ? hint : { hint, cwd }),
+  openPath: (hint, cwd) =>
+    ipcRenderer.invoke("open-path", typeof hint === "object" ? hint : { hint, cwd }),
   cancel: (sessionId) => ipcRenderer.invoke("cancel", sessionId),
   setModel: (id) => ipcRenderer.invoke("set-model", id),
   setPermissionMode: (mode) => ipcRenderer.invoke("set-permission-mode", mode),

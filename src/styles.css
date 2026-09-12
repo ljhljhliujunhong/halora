@@ -56,7 +56,7 @@ select {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 18px 14px;
+  padding: 18px 12px;
   background:
     linear-gradient(180deg, rgba(46, 184, 201, 0.08), transparent 140px),
     #f7fafc;
@@ -67,7 +67,7 @@ select {
 }
 
 .side.collapsed {
-  padding: 12px 8px;
+  padding: 18px 12px;
   align-items: stretch;
 }
 
@@ -76,6 +76,8 @@ select {
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
+  height: 44px;
+  flex-shrink: 0;
 }
 
 .side-foot {
@@ -174,7 +176,9 @@ select {
   justify-content: flex-start;
   gap: 8px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 0 12px;
+  height: 36px;
+  flex-shrink: 0;
   border: 1px dashed rgba(46, 184, 201, 0.42);
   border-radius: 10px;
   background: rgba(46, 184, 201, 0.06);
@@ -203,6 +207,7 @@ select {
 .side-new-chat {
   width: 100%;
   height: 36px;
+  flex-shrink: 0;
   padding: 0;
   display: grid;
   place-items: center;
@@ -233,11 +238,17 @@ select {
   gap: 10px;
   align-items: center;
   min-width: 0;
+  height: 44px;
+  width: 100%;
 }
 
 .side.collapsed .brand {
-  justify-content: center;
+  justify-content: flex-start;
 }
+
+.brand .side-wide { min-width: 0; overflow: hidden; }
+.brand strong { line-height: 22px; white-space: nowrap; }
+.brand span { display: block; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .brand-mark {
   width: 38px;
@@ -580,7 +591,12 @@ select {
 
 .ctx-chip.hot {
   color: var(--danger);
+  --ring-progress: var(--danger);
 }
+
+.ctx-ring { flex-shrink: 0; }
+.ctx-ring-track { stroke: var(--ring-track, #d5dce6); }
+.ctx-ring-progress { stroke: var(--ring-progress, #167b8b); }
 
 .ctx-pop {
   position: absolute;
@@ -722,7 +738,7 @@ select {
   padding: 0 10px 0 14px;
   border: 1px solid rgba(46, 184, 201, 0.22);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--bg-2);
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
@@ -733,8 +749,8 @@ select {
 .model-btn:hover,
 .model-btn.open {
   border-color: rgba(46, 184, 201, 0.5);
-  background: #fff;
-  color: var(--accent-2);
+  background: var(--bg-3);
+  color: var(--text);
 }
 
 .model-name {
@@ -790,7 +806,7 @@ select {
 
 .model-item.active {
   background: rgba(46, 184, 201, 0.14);
-  color: var(--accent-2);
+  color: var(--text);
 }
 
 .thread {
@@ -1402,9 +1418,22 @@ select {
 }
 
 .chip-name {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-name svg {
+  flex-shrink: 0;
+}
+
+.chip-name span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

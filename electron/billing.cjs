@@ -162,8 +162,9 @@ function parseQuota(billing, settings, resets) {
   const period = config.currentPeriod || {};
   const products = Array.isArray(config.productUsage) ? config.productUsage : [];
   const build = products.find((item) => /grokbuild/i.test(String(item.product || "")));
-  const percent = Number(build?.usagePercent ?? config.creditUsagePercent);
-  if (!Number.isFinite(percent)) return null;
+  const value = build?.usagePercent ?? config.creditUsagePercent;
+  const percent = value == null ? NaN : Number(value);
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null;
   return {
     percent: Math.max(0, Math.min(100, Math.round(percent))),
     resetAt: period.end || config.billingPeriodEnd || null,
@@ -171,6 +172,7 @@ function parseQuota(billing, settings, resets) {
     plan: settings?.subscription_tier_display || "",
     resets: Number.isFinite(resets?.count) ? resets.count : null,
     resetCardUntil: resets?.until || null,
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -228,13 +230,14 @@ async function fetchQuota({ force } = {}) {
   if (inflight) return inflight;
   inflight = (async () => {
     const auth = readAuth();
-    if (!auth?.key) return cached.value;
+    if (!auth?.key) throw new Error('尚未登录');
     const [billing, settings, resets] = await Promise.all([
       fetchJson(BILLING_URL, auth.key),
       fetchJson(SETTINGS_URL, auth.key).catch(() => null),
       fetchResets(auth.key).catch(() => null),
     ]);
     const next = parseQuota(billing, settings, resets);
+    if (!next) throw new Error('额度接口格式已变化');
     if (next) cached = { at: Date.now(), value: next };
     return cached.value;
   })().finally(() => {
@@ -243,4 +246,8 @@ async function fetchQuota({ force } = {}) {
   return inflight;
 }
 
-module.exports = { fetchQuota, parseResetTokens, parseGrpcWeb, summarizeResets };
+function hasAuth() {
+  return Boolean(readAuth()?.key);
+}
+
+module.exports = { fetchQuota, hasAuth, parseQuota, parseResetTokens, parseGrpcWeb, summarizeResets };

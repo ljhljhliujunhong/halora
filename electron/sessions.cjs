@@ -11,7 +11,7 @@ function cwdVariants(cwd) {
   const resolved = path.resolve(cwd);
   const lowerDrive = resolved.replace(/^([A-Z]):/, (_m, d) => `${d.toLowerCase()}:`);
   const upperDrive = resolved.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
-  return [...new Set([resolved, lowerDrive, upperDrive])];
+  return [...new Set([resolved, lowerDrive, upperDrive].flatMap(value => [value, value.replace(/\\/g, '/')]))];
 }
 
 function samePath(a, b) {

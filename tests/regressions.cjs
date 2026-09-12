@@ -12,6 +12,8 @@ const root = fs.mkdtempSync(path.join(cache, "regression-"));
 process.env.GROK_HOME = path.join(root, "grok");
 const { buildContext, rememberCompaction } = require("../electron/context.cjs");
 const { canonicalCwd, readTranscript, recordTurnDuration } = require("../electron/sessions.cjs");
+const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require("../electron/files.cjs");
+const { looksLikeFile } = require("../src/resource-hint.mjs");
 const writeJson = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data));
@@ -85,7 +87,7 @@ test("zero and missing tokens are distinct, and usage is isolated per session", 
   assert.equal(buildContext(untouched.cwd, untouched.id).used, 131235);
 });
 
-function mainHarness() {
+function mainHarness(options = {}) {
   const file = path.resolve(__dirname, "../electron/main.cjs");
   const localRequire = createRequire(file);
   const handlers = new Map();
@@ -96,6 +98,8 @@ function mainHarness() {
     cancelled = [];
     loads = [];
     prompts = [];
+    answers = [];
+    answerPermission(id, option) { this.answers.push([id, option]); }
     async setModel() {}
     async loadSession(id) {
       this.loads.push(id);
@@ -112,15 +116,19 @@ function mainHarness() {
       this.emit("notification", "_x.ai/session/update", this.notice);
       return {};
     }
+    start() { this.alive = true; this.started = true; }
+    async initialize() { this.inited = true; return {}; }
+    stop() {}
   }
   const sandbox = {
     require(name) {
       if (name === "electron") return {
         app: { getPath: () => userData, setName() {}, setAppUserModelId() {}, on() {}, whenReady: () => ({then() {}}) },
+        dialog: { showMessageBox: async () => ({ response: 1 }) },
         ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
       };
       if (name === "./acp.cjs") return { AcpClient: FakeAcp };
-      if (name === "./billing.cjs") return { fetchQuota: async () => null };
+      if (name === "./billing.cjs") return options.billing || { fetchQuota: async () => null, hasAuth: () => false };
       if (name === "node:fs") return { ...fs, watch: () => ({close() {}}) };
       return localRequire(name);
     },
@@ -128,7 +136,7 @@ function mainHarness() {
     setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, clearInterval() {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(file, "utf8") + "\nglobalThis.harness = { state, acp, refreshSessions, refreshContext, snapshot, saveSettings, loadSettings, setWindow: (value) => { win = value; } };", sandbox);
+  vm.runInContext(fs.readFileSync(file, "utf8") + "\nglobalThis.harness = { state, acp, refreshSessions, refreshContext, snapshot, saveSettings, loadSettings, beginTurn, endTurn, recovery, markInterrupted, setWindow: (value) => { win = value; } };", sandbox);
   const h = sandbox.harness;
   h.state.ready = true;
   h.setWindow({webContents: { send: (_channel, event) => events.push(event) }});
@@ -186,10 +194,10 @@ test("project and chat order survives activity, transient missing summaries, and
 });
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-async function waitFor(check, tries = 20) {
+async function waitFor(check, tries = 300) {
   for (let i = 0; i < tries; i++) {
     if (check()) return;
-    await tick();
+    await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error("timed out");
 }
@@ -230,6 +238,7 @@ test("switching chats keeps the other session running and accepts a second promp
   assert.equal(h.acp.loads.length, loadsBeforeReturn);
   assert.equal(h.snapshot().running, true);
   assert.deepEqual(h.acp.cancelled, []);
+  await waitFor(() => waits.has(a.id) && waits.has(b.id));
   waits.get(a.id)({});
   await pendingA;
   assert.ok(!h.snapshot().runningIds.includes(a.id));
@@ -237,6 +246,58 @@ test("switching chats keeps the other session running and accepts a second promp
   waits.get(b.id)({});
   await pendingB;
   assert.equal(h.snapshot().runningIds.length, 0);
+});
+
+test('disconnect preserves interrupted turns and accepted queue items across restart', async () => {
+  const f = fixture('recovery', 'recover'); const h = mainHarness(); h.state.cwd=f.cwd; h.state.sessionId=f.id;
+  h.beginTurn(f.id, f.cwd, {user:'finish work',itemId:'already-sent'});
+  h.acp.emit('permission',{requestId:901,params:{sessionId:f.id,toolCall:{title:'Write'},options:[{optionId:'allow',kind:'allow_once'}]}});
+  assert.equal(h.snapshot().permissions.length,1);
+  h.acp.emit('exit',1);
+  assert.equal(h.snapshot().permissions.length,0); assert.equal(h.snapshot().runningIds.length,0);
+  assert.equal(h.recovery().turns[f.id].status,'interrupted');
+  await h.handlers.get('save-composer')(null,{key:f.id,value:{draft:'keep draft',queue:[{id:'already-sent'},{id:'unsent'}]}});
+  const second=mainHarness(); const state=await second.handlers.get('get-state')();
+  assert.ok(state.interrupted.some(t=>t.id===f.id)); assert.equal(state.composers[f.id].draft,'keep draft');
+  assert.deepEqual(state.composers[f.id].queue.map(q=>q.id),['unsent']);
+  await second.handlers.get('dismiss-recovery')(null,f.id); assert.ok(!second.snapshot().interrupted.some(t=>t.id===f.id));
+});
+
+test('quota failure exposes stale status and timestamp without erasing a known balance', async () => {
+  const h=mainHarness({billing:{fetchQuota:async()=>{throw new Error('billing 503');},hasAuth:()=>true}});
+  h.state.quota={percent:32,updatedAt:'2026-09-01T00:00:00Z'};
+  const next=await h.handlers.get('refresh-quota')();
+  assert.equal(next.quota.percent,32); assert.equal(next.quota.status,'stale'); assert.equal(next.quota.updatedAt,'2026-09-01T00:00:00Z');
+  h.state.quota=null; const unavailable=await h.handlers.get('refresh-quota')(); assert.equal(unavailable.quota.percent,null); assert.equal(unavailable.quota.status,'unavailable');
+});
+
+test('ACP permissions can be answered for a background session without replacing the foreground request', async () => {
+  const f=fixture('permissions','permission-a'), g=fixture('permissions','permission-b'); const h=mainHarness(); h.state.cwd=f.cwd;h.state.sessionId=f.id;
+  for(const [id,sessionId] of [[101,f.id],[102,g.id]]) h.acp.emit('permission',{requestId:id,params:{sessionId,options:[{optionId:'allow',kind:'allow_once'}],toolCall:{title:'edit'}}});
+  assert.equal(h.snapshot().permissions.length,2); await h.handlers.get('answer-permission')(null,{requestId:102,optionId:'allow'});
+  assert.equal(h.snapshot().permissions[0].sessionId,f.id); assert.deepEqual(h.acp.answers,[[102,'allow']]);
+});
+
+test('sessions stored with forward slashes reopen on Windows', () => {
+  const cwd=path.join(root,'forward');fs.mkdirSync(cwd,{recursive:true});const id='forward-session';
+  const dir=path.join(process.env.GROK_HOME,'sessions',encodeURIComponent(cwd.replace(/\\/g,'/')),id);
+  writeJson(path.join(dir,'summary.json'),{info:{id,cwd}});
+  fs.writeFileSync(path.join(dir,'chat_history.jsonl'),JSON.stringify({type:'user',content:'hello'})+'\n');
+  assert.ok(readTranscript(cwd,id).some(m=>m.text==='hello'));
+});
+
+test('rewind uses conversation-only mode, backs up first, and surfaces native failure', async () => {
+  const f=fixture('rewind-test','rewind-fixture'); const h=mainHarness();h.state.cwd=f.cwd;h.state.sessionId=f.id;
+  let mode;
+  h.acp.request=async(method,params)=>{
+    if(method.endsWith('/points')) return {rewind_points:[{prompt_index:0}]};
+    mode=params.mode; return {success:false,error:'test rejection'};
+  };
+  await assert.rejects(h.handlers.get('rewind-execute')(null,{cwd:f.cwd,sessionId:f.id,index:0}),/test rejection/);
+  assert.equal(mode,'conversation_only');
+  const backupRoot=path.join(root,'settings','rewind-backups'); const folder=fs.readdirSync(backupRoot).find(f=>f.startsWith('rewind-fixture-'));
+  assert.ok(fs.existsSync(path.join(backupRoot,folder,'chat_history.jsonl')));
+  assert.ok(fs.existsSync(path.join(f.dir,'chat_history.jsonl')));
 });
 
 test("turn durations restore from events.jsonl and sidecar after reopen", () => {
@@ -331,4 +392,89 @@ test("send-prompt records duration and compact does not", async () => {
   const row = JSON.parse(rows[0]);
   assert.ok(row.durationMs >= 0);
   assert.equal(row.user, "hello there");
+});
+
+test("startup shows last saved quota before a live fetch", async () => {
+  const h = mainHarness();
+  h.saveSettings({
+    lastQuota: {
+      percent: 6,
+      window: "本周",
+      resetAt: "2026-09-14T00:00:00Z",
+      plan: "SuperGrok",
+      resets: 2,
+      resetCardUntil: null,
+    },
+  });
+  h.state.quota = null;
+  const snap = await h.handlers.get("get-state")();
+  assert.equal(snap.quota.percent, 6);
+  assert.equal(snap.quota.window, "本周");
+  assert.equal(snap.quota.resets, 2);
+});
+
+test("dropped folders and files become attachments", () => {
+  const dir = path.join(root, "drop-box");
+  const inner = path.join(dir, "notes");
+  fs.mkdirSync(inner, { recursive: true });
+  const file = path.join(dir, "readme.txt");
+  fs.writeFileSync(file, "hello");
+  const folder = classifyDroppedPath(inner);
+  const plain = classifyDroppedPath(file);
+  assert.equal(folder.kind, "folder");
+  assert.equal(folder.name, "notes");
+  assert.equal(plain.kind, "file");
+  assert.equal(plain.name, "readme.txt");
+  const mixed = classifyDroppedPaths([inner, file, file, path.join(dir, "missing")]);
+  assert.equal(mixed.length, 2);
+  assert.deepEqual(mixed.map((item) => item.kind), ["folder", "file"]);
+});
+
+test("resolve-drops ipc keeps a folder as one attachment", async () => {
+  const dir = path.join(root, "drop-ipc");
+  fs.mkdirSync(dir, { recursive: true });
+  const h = mainHarness();
+  const rows = await h.handlers.get("resolve-drops")(null, [dir]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "folder");
+  assert.equal(rows[0].name, "drop-ipc");
+});
+
+test("locateResource finds relative, absolute, and basename-only files", () => {
+  const cwd = path.join(root, "assets-project");
+  const nested = path.join(cwd, "images");
+  fs.mkdirSync(nested, { recursive: true });
+  const file = path.join(nested, "starbase-girl-model3-v1.jpg");
+  fs.writeFileSync(file, "x");
+  assert.equal(locateResource(cwd, file), path.resolve(file));
+  assert.equal(locateResource(cwd, "images/starbase-girl-model3-v1.jpg"), path.resolve(file));
+  assert.equal(locateResource(cwd, "starbase-girl-model3-v1.jpg"), path.resolve(file));
+  assert.equal(locateResource(cwd, "`starbase-girl-model3-v1.jpg`"), path.resolve(file));
+  assert.equal(locateResource(cwd, "missing-nope.jpg"), null);
+});
+
+test("opening the app connects grok instead of showing disconnected", async () => {
+  const fake = path.join(root, "fake-grok.exe");
+  fs.writeFileSync(fake, "fake");
+  process.env.GROK_BINARY = fake;
+  const h = mainHarness();
+  h.state.ready = false;
+  const snap = await h.handlers.get("get-state")();
+  assert.equal(snap.connection, "reconnecting");
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(h.state.ready, true);
+  assert.equal(h.snapshot().connection, "connected");
+  assert.equal(h.snapshot().everReady, true);
+});
+
+test("looksLikeFile accepts real files and rejects emails and sites", () => {
+  assert.equal(looksLikeFile("starbase-girl-model3-v1.jpg"), "starbase-girl-model3-v1.jpg");
+  assert.equal(looksLikeFile("`src/App.jsx`"), "src/App.jsx");
+  assert.equal(looksLikeFile("E:/folder/notes.md"), "E:/folder/notes.md");
+  assert.equal(looksLikeFile("1914210972@qq.com"), "");
+  assert.equal(looksLikeFile("junhong liu (1914210972@qq.com)"), "");
+  assert.equal(looksLikeFile("https://luma.com/l0jfxz91"), "");
+  assert.equal(looksLikeFile("luma.com"), "");
+  assert.equal(looksLikeFile("qq.com"), "");
 });
