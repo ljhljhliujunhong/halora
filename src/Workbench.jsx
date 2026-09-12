@@ -31,6 +31,7 @@ export function Workbench({ page, state, onState, onClose }) {
   const [label, setLabel] = useState('');
   const [backup, setBackup] = useState(null);
   const [format, setFormat] = useState('md');
+  const [grokUpdate, setGrokUpdate] = useState(null);
   const request = useRef(0);
   const cwd = state.cwd;
   const projectRunning = (state.projects || []).find(p => p.cwd === cwd)?.sessions.some(s => (state.runningIds || []).includes(s.id));
@@ -67,7 +68,7 @@ export function Workbench({ page, state, onState, onClose }) {
       <div className="wb-actions">{['review', 'checkpoints'].includes(page) && <button className="btn ghost" disabled={busy || !cwd} onClick={() => act(load)}>刷新</button>}<button className="btn ghost" onClick={onClose}>返回对话</button></div>
     </header>
     {error && <div className="wb-error" role="alert">{error}</div>}
-    {result && <div className="wb-result">{result.path || result.backup || result.text}{(result.path || result.backup) && <button className="btn ghost" onClick={() => api.showInFolder(result.path || result.backup).catch(e => setError(e.message))}>在文件夹中显示</button>}</div>}
+    {result && <div className="wb-result">{result.path || result.backup || result.text}{(result.path || result.backup) && <button className="btn ghost" onClick={() => api.showInFolder(result.path || result.backup).catch(e => setError(e.message))}>在文件夹中显示</button>}{result.relaunch && <button type="button" className="btn primary" onClick={() => api.relaunchApp()}>重启星环</button>}</div>}
     {busy && <div className="wb-progress" role="status">正在处理…</div>}
     {page === 'settings' && <form className="wb-settings" onSubmit={e => { e.preventDefault(); act(async () => { onState(await api.savePreferences(prefs)); setResult({text:'设置已保存'}); }); }}>
       <h2>对话</h2>
@@ -82,6 +83,8 @@ export function Workbench({ page, state, onState, onClose }) {
       <h2>恢复</h2>
       <label>任务运行时确认退出<input type="checkbox" checked={prefs.confirmExit !== false} onChange={e => field('confirmExit', e.target.checked)} /></label>
       <label>发送前建立文件检查点<input type="checkbox" checked={prefs.checkpoints !== false} onChange={e => field('checkpoints', e.target.checked)} /></label>
+      <h2>更新</h2>
+      <label>Grok Build<div className="wb-actions">{grokUpdate && <span>{grokUpdate.available ? `${grokUpdate.current} → ${grokUpdate.latest}` : `${grokUpdate.current} · 已是最新`}</span>}<button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setGrokUpdate(await api.grokCheckUpdate()))}>检查更新</button>{grokUpdate?.available && <button type="button" className="btn primary" disabled={busy} onClick={() => act(async () => { const info = await api.grokInstallUpdate(); if (!info) return; setGrokUpdate(info); if (!info.relaunched) setResult({ text: 'Grok Build 已更新', relaunch: true }); })}>更新</button>}</div></label>
       <div className="wb-actions"><button className="btn primary" disabled={busy}>保存设置</button><span>Halora · 星环</span></div>
     </form>}
     {page === 'review' && (!cwd ? <p>先打开一个项目。</p> : review && <>

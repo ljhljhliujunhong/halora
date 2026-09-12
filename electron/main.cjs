@@ -4,6 +4,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { AcpClient } = require("./acp.cjs");
 const { findGrokBinary, grokHome } = require("./grok-path.cjs");
+const grokUpdate = require("./update.cjs");
 const { readJson, writeJson, atomicWrite, preferences } = require('./storage.cjs');
 const { PermissionQueue } = require('./permissions.cjs');
 const reviewService = require('./review.cjs');
@@ -404,9 +405,10 @@ function scheduleSessionRefresh() {
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     const before = sessionsFingerprint();
+    const used = state.context?.used;
     refreshSessions();
     refreshContext();
-    if (sessionsFingerprint() !== before) send("state", snapshot());
+    if (sessionsFingerprint() !== before || state.context?.used !== used) send("state", snapshot());
   }, 400);
 }
 
@@ -695,11 +697,12 @@ function handleSessionNotice(params) {
   if (kind === "auto_compact_completed" || kind === "compaction_completed" || kind === "context_compact") {
     rememberCompaction(cwd, sessionId, params);
     if (sessionId === state.sessionId) refreshContext();
+    const after = update.tokens_after ?? update.tokensAfter;
     send("compact", {
       sessionId,
       phase: "done",
       tokensBefore: update.tokens_before ?? update.tokensBefore,
-      tokensAfter: sessionId === state.sessionId ? state.context?.used : update.tokens_after ?? update.tokensAfter,
+      tokensAfter: sessionId === state.sessionId && state.context?.used != null ? state.context.used : after,
       estimated: sessionId === state.sessionId ? Boolean(state.context?.estimated) : false,
       summary: update.summary_preview || update.summary || "",
     });
@@ -1364,6 +1367,33 @@ ipcMain.on?.('save-composer-sync', (event, payload) => {
 });
 
 ipcMain.handle('reconnect', async () => { reconnectAttempts = 0; await ensureAgent(); send('state', snapshot()); return snapshot(); });
+ipcMain.handle('grok-check-update', () => grokUpdate.check(state.grokBin || findGrokBinary()));
+ipcMain.handle('grok-install-update', async () => {
+  if (runningIds().length) throw new Error('请先停止所有运行中的任务');
+  const bin = state.grokBin || findGrokBinary();
+  if (!bin) throw new Error('找不到 Grok Build');
+  acp.stop();
+  state.ready = false;
+  try {
+    const info = await grokUpdate.install(bin);
+    const answer = await dialog.showMessageBox(win, {
+      type: 'info', title: '更新完成', message: '需要重启星环。',
+      buttons: ['稍后', '重启'], defaultId: 1, cancelId: 0,
+    });
+    if (answer.response === 1) {
+      quitting = true;
+      app.relaunch();
+      app.exit(0);
+      return { ...info, relaunched: true };
+    }
+    ensureAgent().catch(() => send('state', snapshot()));
+    return { ...info, relaunched: false };
+  } catch (error) {
+    ensureAgent().catch(() => send('state', snapshot()));
+    throw error;
+  }
+});
+ipcMain.handle('relaunch-app', () => { quitting = true; app.relaunch(); app.exit(0); });
 ipcMain.handle('dismiss-recovery', (_event, id) => { updateRecovery(id, null); send('state', snapshot()); return snapshot(); });
 ipcMain.handle('refresh-quota', async () => { await refreshQuota(true); return snapshot(); });
 ipcMain.handle('save-preferences', async (_event, payload) => {

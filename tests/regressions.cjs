@@ -76,6 +76,23 @@ test("bogus unchanged completion uses active history as an explicit estimate", (
   assert.equal(c.free, c.total - c.used);
 });
 
+test("compact is not undone by a larger leftover signals count", () => {
+  const f = fixture("context", "mismatch");
+  writeJson(path.join(f.dir, "signals.json"), { contextTokensUsed: 100000, contextWindowTokens: 500000 });
+  fs.utimesSync(path.join(f.dir, "signals.json"), new Date(at - 1000), new Date(at - 1000));
+  rememberCompaction(f.cwd, f.id, {
+    sessionId: f.id,
+    _meta: { agentTimestampMs: at },
+    update: { sessionUpdate: "auto_compact_completed", tokens_before: 13000, tokens_after: 11000 },
+  });
+  assert.equal(buildContext(f.cwd, f.id).used, 11000);
+  fs.utimesSync(path.join(f.dir, "signals.json"), new Date(), new Date());
+  assert.equal(buildContext(f.cwd, f.id).used, 11000);
+  writeJson(path.join(f.dir, "signals.json"), { contextTokensUsed: 100000, contextWindowTokens: 500000 });
+  assert.equal(buildContext(f.cwd, f.id).used, 11000);
+  writeJson(path.join(f.dir, "signals.json"), { contextTokensUsed: 15000, contextWindowTokens: 500000 });
+  assert.equal(buildContext(f.cwd, f.id).used, 15000);
+});
 test("zero and missing tokens are distinct, and usage is isolated per session", () => {
   const zero = fixture("context", "zero");
   rememberCompaction(zero.cwd, zero.id, completion(zero, 0));
@@ -123,12 +140,13 @@ function mainHarness(options = {}) {
   const sandbox = {
     require(name) {
       if (name === "electron") return {
-        app: { getPath: () => userData, setName() {}, setAppUserModelId() {}, on() {}, whenReady: () => ({then() {}}) },
-        dialog: { showMessageBox: async () => ({ response: 1 }) },
+        app: { getPath: () => userData, setName() {}, setAppUserModelId() {}, on() {}, whenReady: () => ({then() {}}), relaunch() { events.push({ type: "relaunch" }); }, exit() { events.push({ type: "exit" }); } },
+        dialog: options.dialog || { showMessageBox: async () => ({ response: 1 }) },
         ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
       };
       if (name === "./acp.cjs") return { AcpClient: FakeAcp };
       if (name === "./billing.cjs") return options.billing || { fetchQuota: async () => null, hasAuth: () => false };
+      if (name === "./update.cjs") return options.update || localRequire(name);
       if (name === "node:fs") return { ...fs, watch: () => ({close() {}}) };
       return localRequire(name);
     },
@@ -468,6 +486,29 @@ test("opening the app connects grok instead of showing disconnected", async () =
   assert.equal(h.snapshot().everReady, true);
 });
 
+test("settings can check grok updates, block install while running, and restart after install", async () => {
+  let current = "1.0.29";
+  const update = {
+    check: async () => ({ current, latest: "1.0.30", available: current !== "1.0.30" }),
+    install: async () => { current = "1.0.30"; return { current, latest: "1.0.30", available: false }; },
+  };
+  const later = mainHarness({ update, dialog: { showMessageBox: async () => ({ response: 0 }) } });
+  later.state.grokBin = "grok";
+  const checked = await later.handlers.get("grok-check-update")();
+  assert.equal(checked.available, true);
+  const gen = later.beginTurn("busy", later.state.cwd || root, { user: "hi" });
+  await assert.rejects(later.handlers.get("grok-install-update")(), /停止/);
+  later.endTurn("busy", gen);
+  const installed = await later.handlers.get("grok-install-update")();
+  assert.equal(installed.available, false);
+  assert.equal(installed.relaunched, false);
+  const restart = mainHarness({ update, dialog: { showMessageBox: async () => ({ response: 1 }) } });
+  restart.state.grokBin = "grok";
+  current = "1.0.29";
+  const done = await restart.handlers.get("grok-install-update")();
+  assert.equal(done.relaunched, true);
+  assert.ok(restart.events.some((event) => event.type === "relaunch"));
+});
 test("looksLikeFile accepts real files and rejects emails and sites", () => {
   assert.equal(looksLikeFile("starbase-girl-model3-v1.jpg"), "starbase-girl-model3-v1.jpg");
   assert.equal(looksLikeFile("`src/App.jsx`"), "src/App.jsx");

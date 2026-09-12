@@ -33,6 +33,7 @@ internal static class Program
     static IEnumerable<string> Candidates(string baseDir)
     {
         yield return Path.Combine(baseDir, "halora-app", "Halora.exe");
+        yield return Path.Combine(baseDir, "release", "win-unpacked", "Halora.exe");
         yield return Path.Combine(baseDir, "Halora.exe");
     }
 

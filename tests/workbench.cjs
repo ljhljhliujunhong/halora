@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { readJson, writeJson, preferences, safePath } = require('../electron/storage.cjs');
 const { PermissionQueue } = require('../electron/permissions.cjs');
 const review = require('../electron/review.cjs');
+const grokUpdate = require('../electron/update.cjs');
 const archives = require('../electron/archives.cjs');
 const { parseQuota } = require('../electron/billing.cjs');
 const cache = 'E:/VsCodeProject/Agent缓存文件/temp/halora-workbench';
@@ -40,6 +41,25 @@ test('missing quota never becomes zero; real zero and invalid bounds are distinc
   assert.equal(parseQuota({creditUsagePercent:-1},null,null),null);
   assert.equal(parseQuota({creditUsagePercent:0},null,null).percent,0);
   assert.equal(parseQuota({creditUsagePercent:101},null,null),null);
+});
+test('grok update check parses json, ignores log lines, and treats matching versions as current', () => {
+  assert.deepEqual(grokUpdate.parseCheck('{"currentVersion":"1.0.29","latestVersion":"1.0.30","updateAvailable":true,"error":null}'), { current: '1.0.29', latest: '1.0.30', available: true });
+  assert.equal(grokUpdate.parseCheck('note\n{"currentVersion":"1.0.30","latestVersion":"1.0.30","updateAvailable":false,"error":null}').available, false);
+  assert.equal(grokUpdate.parseCheck('{"currentVersion":"1.0.30","latestVersion":"1.0.30","updateAvailable":true,"error":null}').available, false);
+  assert.throws(() => grokUpdate.parseCheck('{"error":"offline"}'), /offline/);
+});
+test('grok update install runs update then refuses if still behind', async () => {
+  const calls = [];
+  const run = async (_bin, args) => {
+    calls.push(args[0] === 'update' && args[1] === '--check' ? 'check' : 'update');
+    if (args.includes('--check')) return '{"currentVersion":"1.0.30","latestVersion":"1.0.30","updateAvailable":false,"error":null}';
+    return 'updated';
+  };
+  assert.deepEqual(await grokUpdate.install('grok', run), { current: '1.0.30', latest: '1.0.30', available: false });
+  assert.deepEqual(calls, ['update', 'check']);
+  await assert.rejects(grokUpdate.install('grok', async (_bin, args) => args.includes('--check')
+    ? '{"currentVersion":"1.0.29","latestVersion":"1.0.30","updateAvailable":true,"error":null}' : 'updated'), /没有完成/);
+  await assert.rejects(grokUpdate.check(null), /找不到/);
 });
 test('review stages and unstages Unicode paths, commits only staged changes, and handles binary files', async () => {
   const cwd=repo('review'); put(cwd,'代码.txt','after\n'); put(cwd,'new.txt','new'); put(cwd,'binary.png',Buffer.from([0,1,2]));

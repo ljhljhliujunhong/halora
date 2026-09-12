@@ -3,7 +3,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const root = path.join(__dirname, '..');
-const source = process.env.HALORA_UNPACKED || path.join(root, 'release', 'win-unpacked');
+const source = process.env.HALORA_UNPACKED
+  || [path.join(root, 'pack-out', 'win-unpacked'), path.join(root, 'release', 'win-unpacked')]
+    .find(dir => fs.existsSync(path.join(dir, 'Halora.exe')))
+  || path.join(root, 'release', 'win-unpacked');
 const dest = path.join(root, 'halora-app');
 const launcherOut = path.join(root, '星环.exe');
 const csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
@@ -19,14 +22,10 @@ function copyApp() {
   }
   fs.mkdirSync(dest, { recursive: true });
   const robocopy = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'robocopy.exe');
-  let result = run(robocopy, [source, dest, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np']);
+  const result = run(robocopy, [source, dest, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np', '/R:1', '/W:1']);
   if (result.status >= 8) {
-    run('taskkill', ['/IM', 'Halora.exe', '/F']);
-    run('taskkill', ['/IM', 'Xinghuan.exe', '/F']);
-    result = run(robocopy, [source, dest, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np']);
-  }
-  if (result.status >= 8) {
-    throw new Error(`复制应用失败（${result.status}）：${result.stderr || result.stdout || ''}`.trim());
+    console.warn('halora-app 正在使用，新版本已放在 release/win-unpacked。退出星环后再打开即可。');
+    return;
   }
   if (!fs.existsSync(path.join(dest, 'Halora.exe'))) throw new Error('复制后找不到 Halora.exe');
 }

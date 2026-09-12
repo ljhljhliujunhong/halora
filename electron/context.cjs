@@ -91,15 +91,25 @@ function fileStamp(file) {
   }
 }
 
+function snapshotSignalsUsed(dir, at, existing) {
+  if (existing?.at === at && existing.signalsUsed != null) return existing.signalsUsed;
+  const file = path.join(dir, "signals.json");
+  const current = tokenCount(readJson(file)?.contextTokensUsed);
+  if (fileStamp(file).time <= at + 2000) return current;
+  return existing?.signalsUsed ?? null;
+}
+
 function recordCompaction(dir, params, timestamp = Date.now()) {
   const update = params?.update || {};
   if (!dir || !completedKinds.has(update.sessionUpdate)) return;
   const at = Number(params._meta?.agentTimestampMs) || timestamp;
-  if ((compactEvents.get(dir)?.at || 0) > at) return;
+  const existing = compactEvents.get(dir);
+  if ((existing?.at || 0) > at) return;
   compactEvents.set(dir, {
     at,
     before: tokenCount(update.tokens_before ?? update.tokensBefore),
     after: tokenCount(update.tokens_after ?? update.tokensAfter),
+    signalsUsed: snapshotSignalsUsed(dir, at, existing),
   });
 }
 
@@ -149,24 +159,31 @@ function activeHistoryTokens(dir) {
 function buildContext(cwd, sessionId) {
   const dir = sessionDir(cwd, sessionId);
   const signals = dir ? readJson(path.join(dir, "signals.json")) : null;
-  let used = Number(signals?.contextTokensUsed) || 0;
+  let used = tokenCount(signals?.contextTokensUsed);
+  if (used == null) used = 0;
   let estimated = false;
   const compact = dir ? latestCompaction(dir, sessionId) : null;
   if (compact) {
     const signalsTime = fileStamp(path.join(dir, "signals.json")).time;
-    // Some Grok versions rewrite the same pre-compaction count. Do not let it
-    // replace the compacted context until a fresh usage measurement arrives.
-    const freshSignals = signalsTime > compact.at && used !== compact.before;
-    if (!freshSignals) {
+    // Grok often rewrites signals.json with the pre-compact window (or the
+    // same count). Only trust it once it drops below `before`, or reports a
+    // new number that is not the snapshot taken at compact time.
+    const staleSignals = signalsTime <= compact.at
+      || (compact.signalsUsed != null && used === compact.signalsUsed)
+      || (compact.before != null && used === compact.before);
+    if (staleSignals) {
       const reliable = compact.after != null &&
         (compact.before == null || compact.after < compact.before || compact.after === 0);
-      const historyChanged = fileStamp(path.join(dir, "chat_history.jsonl")).time > compact.at + 1000;
-      const estimate = (!reliable || historyChanged) ? activeHistoryTokens(dir) : null;
-      if (estimate != null) {
+      const historyChanged = fileStamp(path.join(dir, "chat_history.jsonl")).time > compact.at + 1500;
+      const estimate = historyChanged ? activeHistoryTokens(dir) : (!reliable ? activeHistoryTokens(dir) : null);
+      if (estimate != null && (!reliable || estimate > (compact.after ?? 0) + 1500)) {
         used = estimate;
         estimated = true;
       } else if (reliable) {
         used = compact.after;
+      } else if (estimate != null) {
+        used = estimate;
+        estimated = true;
       }
     }
   }

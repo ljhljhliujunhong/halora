@@ -4,6 +4,7 @@ dist/
 *.log
 .DS_Store
 release/
+pack-out/
 halora-app/
 build/*.png
 build/*.ico
