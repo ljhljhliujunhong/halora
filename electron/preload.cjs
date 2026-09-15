@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld("workshop", {
     ipcRenderer.invoke("open-path", typeof hint === "object" ? hint : { hint, cwd }),
   cancel: (sessionId) => ipcRenderer.invoke("cancel", sessionId),
   setModel: (id) => ipcRenderer.invoke("set-model", id),
+  setEffort: (effort) => ipcRenderer.invoke("set-effort", effort),
   setPermissionMode: (mode) => ipcRenderer.invoke("set-permission-mode", mode),
   answerPermission: (requestId, optionId) =>
     ipcRenderer.invoke("answer-permission", { requestId, optionId }),

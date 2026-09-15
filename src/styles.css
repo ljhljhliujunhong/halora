@@ -786,10 +786,17 @@ select {
 }
 
 .model-name {
-  max-width: 140px;
+  max-width: 148px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-effort {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  flex-shrink: 0;
 }
 
 .model-chev {
@@ -806,13 +813,41 @@ select {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  min-width: 188px;
+  min-width: 228px;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 6px;
   box-shadow: var(--shadow);
   z-index: 18;
+}
+
+.effort-pane {
+  padding: 8px 10px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.effort-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.effort-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.effort-pane input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .model-item {

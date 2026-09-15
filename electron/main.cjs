@@ -32,6 +32,8 @@ const { fetchQuota, hasAuth } = require("./billing.cjs");
 const { listSkills, listSkillLibrary, importSkillsFrom, removeUserSkill } = require("./skills.cjs");
 const { extFromMime, fileToImage, toDataUrl } = require("./media.cjs");
 const { searchFiles, resolveMentions, collectMentions, classifyDroppedPath, classifyDroppedPaths, locateResource } = require("./files.cjs");
+const { normalizeMode, modeSyncCommands } = require("./permission-mode.cjs");
+const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions } = require("./effort.cjs");
 
 const acp = new AcpClient();
 const live = new Map();
@@ -44,6 +46,7 @@ const state = {
   ready: false,
   models: [],
   modelId: "grok-4.6",
+  effort: null,
   sessions: [],
   projects: [],
   permission: null,
@@ -130,12 +133,50 @@ function liveSlot(id, cwd) {
   if (!id) return null;
   let slot = live.get(id);
   if (!slot) {
-    slot = { cwd: cwd || null, running: false, gen: 0, attached: false };
+    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false };
     live.set(id, slot);
   } else if (cwd) {
     slot.cwd = cwd;
   }
   return slot;
+}
+
+function planModeActive(cwd, id) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(sessionDir(cwd, id), "plan_mode.json"), "utf8"));
+    return Boolean(raw.state && raw.state !== "Inactive");
+  } catch {
+    return false;
+  }
+}
+
+function rememberedMode(slot) {
+  if (slot?.grokYolo) return "yolo";
+  if (slot?.grokPlan) return "plan";
+  return "agent";
+}
+
+async function syncSessionMode(id) {
+  const slot = live.get(id);
+  if (!id || !slot?.attached || slot.running || !acp.alive) return;
+  const want = normalizeMode(state.permissionMode);
+  const cmds = modeSyncCommands(rememberedMode(slot), want);
+  if (!cmds.length) {
+    slot.grokYolo = want === "yolo";
+    slot.grokPlan = want === "plan";
+    return;
+  }
+  slot.running = true;
+  try {
+    for (const cmd of cmds) await acp.prompt(id, cmd);
+    slot.grokYolo = want === "yolo";
+    slot.grokPlan = want === "plan";
+  } catch {
+    // Keep the last known Grok flags; the next switch or send retries.
+  } finally {
+    slot.running = false;
+    slot.pendingMode = null;
+  }
 }
 
 function runningIds() {
@@ -174,10 +215,18 @@ function beginTurn(id, cwd, opts = {}) {
   slot.gen += 1;
   slot.running = true;
   slot.turnStartedAt = Date.now();
+  slot.turnId = `${id}:${slot.gen}:${slot.turnStartedAt}`;
   slot.compactTurn = Boolean(opts.compact);
   slot.gotUpdate = false;
   slot.turnUser = String(opts.user || "").slice(0, 200);
+  if (!slot.compactTurn) send('turn-start', turnInfo(id));
   return slot.gen;
+}
+
+function turnInfo(id) {
+  const slot = live.get(id);
+  if (!slot?.running || !slot.turnStartedAt || slot.compactTurn) return null;
+  return { sessionId: id, turnId: slot.turnId, startedAt: slot.turnStartedAt };
 }
 
 function stampTurn(id) {
@@ -188,10 +237,11 @@ function stampTurn(id) {
   }
   const startedAt = slot.turnStartedAt;
   const user = slot.turnUser;
+  const endedAt = Date.now();
+  send('turn-end', { sessionId: id, turnId: slot.turnId, startedAt, endedAt, durationMs: Math.max(0, endedAt - startedAt) });
   slot.turnStartedAt = 0;
   slot.turnUser = "";
   if (!slot.gotUpdate) return;
-  const endedAt = Date.now();
   recordTurnDuration(slot.cwd, id, {
     startedAt,
     endedAt,
@@ -207,6 +257,10 @@ function endTurn(id, gen) {
   slot.running = false;
   slot.compactTurn = false;
   if (recovery().turns?.[id]?.status === 'running') updateRecovery(id, null);
+  if (slot.pendingMode) {
+    slot.pendingMode = null;
+    syncSessionMode(id).catch(() => {});
+  }
   return true;
 }
 
@@ -229,7 +283,8 @@ function cancelLive(id) {
 }
 
 function resetLive(keepIds = false) {
-  for (const slot of live.values()) {
+  for (const [id, slot] of live) {
+    stampTurn(id);
     slot.attached = false;
     slot.running = false;
     slot.gen += 1;
@@ -241,9 +296,14 @@ async function attachSession(id, cwd) {
   await ensureAgent();
   const slot = liveSlot(id, cwd);
   if (slot.attached && acp.alive) return null;
-  const loaded = await acp.loadSession(id, cwd);
+  const loaded = await acp.loadSession(id, cwd, state.permissionMode);
   slot.attached = true;
   slot.cwd = cwd || slot.cwd;
+  slot.grokYolo = state.permissionMode === "yolo";
+  slot.grokPlan = planModeActive(slot.cwd, id);
+  applyInit(loaded || {});
+  if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
+  await syncSessionMode(id);
   return loaded;
 }
 
@@ -284,6 +344,7 @@ function snapshot() {
     grokBin: state.grokBin,
     models: state.models,
     modelId: state.modelId,
+    effort: state.effort,
     sessions: state.sessions,
     projects: state.projects,
     permission: state.permission,
@@ -305,6 +366,7 @@ function snapshot() {
     quota: state.quota,
     running: viewedRunning(),
     runningIds: runningIds(),
+    activeTurns: Object.fromEntries([...live.keys()].map(id => [id, turnInfo(id)]).filter(([, turn]) => turn)),
   };
 }
 
@@ -573,12 +635,35 @@ async function refreshQuota(force = false) {
       return next;
     }
   } catch (error) {
-    state.quota = { ...state.quota, percent: state.quota?.percent ?? null, status: state.quota?.percent != null ? 'stale' : 'unavailable', error: /401|403/.test(error.message) ? '登录已失效，请重新登录' : '暂时无法刷新' };
+    const message = /401|403/.test(error.message) ? '登录已失效，请重新登录'
+      : /尚未登录/.test(error.message) ? '尚未登录'
+      : /额度接口/.test(error.message) ? error.message
+      : /abort|timeout/i.test(`${error.name} ${error.message}`) ? '刷新超时，请重试'
+      : /billing \d+/.test(error.message) ? `额度服务暂不可用（${error.message.match(/\d+/)?.[0]}）`
+      : '无法连接额度服务，请检查网络后重试';
+    state.quota = { ...state.quota, percent: state.quota?.percent ?? null, status: state.quota?.percent != null ? 'stale' : 'unavailable', error: message, attemptedAt: new Date().toISOString() };
   }
   if (!state.quota) state.quota = { percent: null, status: 'unavailable', error: hasAuth() ? '暂时无法刷新' : '尚未登录' };
   if (hasAuth()) scheduleQuotaRetry();
   send('state', snapshot());
   return state.quota;
+}
+
+function applyConfig(result) {
+  const parsed = configFromResult(result);
+  if (parsed) state.effort = parsed;
+  return parsed;
+}
+
+function seedEffortFromDisk(cwd, id) {
+  if (!cwd || !id) return;
+  try {
+    const summary = JSON.parse(fs.readFileSync(path.join(sessionDir(cwd, id), "summary.json"), "utf8"));
+    const fromDisk = effortFromSummary(summary);
+    if (fromDisk) state.effort = fromDisk;
+  } catch {
+    // no saved effort
+  }
 }
 
 function applyInit(result) {
@@ -598,6 +683,32 @@ function applyInit(result) {
     state.modelId;
   const commands = result?._meta?.availableCommands || result?.availableCommands;
   if (commands) applyCommands(commands);
+  applyConfig(result);
+}
+
+function effortError(err) {
+  const detail = `${err?.message || ""} ${err?.payload?.data || err?.data || ""}`;
+  if (/unknown reasoning_effort/i.test(detail)) return new Error("当前模型不支持这个思考强度");
+  if (/invalid params|did not match|missing field/i.test(detail)) return new Error("思考强度没能改成功");
+  return err instanceof Error ? err : new Error(String(err || "思考强度没能改成功"));
+}
+
+function resolvedEffort(value) {
+  return clampEffort(value, state.effort?.options || defaultEffortOptions());
+}
+
+async function applyPreferredEffort(sessionId) {
+  const want = resolvedEffort(loadSettings().effort || state.effort?.current);
+  if (!want || !sessionId || !acp.alive) return;
+  if (want === state.effort?.current) return;
+  try {
+    const result = await acp.setConfigOption(sessionId, "reasoning_effort", want);
+    applyConfig(result);
+    if (state.effort) state.effort = { ...state.effort, current: want };
+    else state.effort = { current: want, options: defaultEffortOptions() };
+  } catch {
+    // Model may not advertise reasoning effort.
+  }
 }
 
 async function ensureAgent() {
@@ -620,18 +731,15 @@ async function createSession() {
   await ensureAgent();
   if (!state.cwd) throw new Error("先打开一个文件夹");
   const preferred = loadSettings().modelId || state.modelId;
-  const created = await acp.newSession(state.cwd);
+  const created = await acp.newSession(state.cwd, state.permissionMode);
   state.sessionId = created.sessionId;
   saveSettings({ lastSessionId: state.sessionId });
   const slot = liveSlot(created.sessionId, state.cwd);
   slot.attached = true;
-  if (created.models?.availableModels || created._meta || created.availableCommands) {
-    applyInit({
-      models: created.models,
-      _meta: created._meta,
-      availableCommands: created.availableCommands,
-    });
-  }
+  slot.grokYolo = state.permissionMode === "yolo";
+  slot.grokPlan = false;
+  await syncSessionMode(created.sessionId);
+  applyInit(created);
   if (preferred) {
     try {
       await acp.setModel(state.sessionId, preferred);
@@ -639,6 +747,11 @@ async function createSession() {
     } catch {
       // keep going with the default
     }
+  }
+  await applyPreferredEffort(state.sessionId);
+  if (!state.effort && /grok-4/i.test(state.modelId || "")) {
+    const current = resolvedEffort(loadSettings().effort) || "high";
+    state.effort = { current, options: defaultEffortOptions() };
   }
   refreshSessions();
   refreshSkills();
@@ -790,6 +903,13 @@ acp.on("notification", (method, params) => {
       }
       return;
     }
+    if (update.sessionUpdate === "config_option_update" || update.sessionUpdate === "config_options_update") {
+      if (sessionId === state.sessionId) {
+        applyConfig(update);
+        send("state", snapshot());
+      }
+      return;
+    }
     if (
       update.sessionUpdate === "auto_compact_started" ||
       update.sessionUpdate === "auto_compact_completed" ||
@@ -802,8 +922,9 @@ acp.on("notification", (method, params) => {
       return;
     }
     const slot = live.get(sessionId);
+    if ([...(acp.draining?.values() || [])].some(d => d.sessionId === sessionId)) return;
     if (slot?.running) slot.gotUpdate = true;
-    send("update", { sessionId, update });
+    send("update", { sessionId, update, turn: turnInfo(sessionId) });
     return;
   }
   if (method === "_x.ai/session_notification" || method === "x.ai/session_notification") {
@@ -897,9 +1018,15 @@ ipcMain.handle("get-state", async () => {
   watchSessions();
   hydrateQuota();
   if (!state.sessionId && settings.lastSessionId && state.sessions.some(s => s.id === settings.lastSessionId)) state.sessionId = settings.lastSessionId;
+  if (state.sessionId) seedEffortFromDisk(state.cwd, state.sessionId);
+  if (!state.effort) {
+    const options = defaultEffortOptions();
+    const current = clampEffort(settings.effort, options);
+    if (current) state.effort = { current, options };
+  }
   if (state.sessionId) {
     refreshContext();
-    send('transcript', { sessionId: state.sessionId, messages: readTranscript(state.cwd, state.sessionId), live: viewedRunning() });
+    send('transcript', { sessionId: state.sessionId, messages: readTranscript(state.cwd, state.sessionId), live: viewedRunning(), turn: turnInfo(state.sessionId) });
   }
   if (state.quota) {
     refreshQuota();
@@ -910,7 +1037,16 @@ ipcMain.handle("get-state", async () => {
     ]);
   }
   if (!state.ready) {
-    ensureAgent().then(() => send("state", snapshot())).catch(() => send("state", snapshot()));
+    ensureAgent()
+      .then(async () => {
+        if (state.sessionId && state.cwd) {
+          try { await attachSession(state.sessionId, state.cwd); } catch { /* still show the saved chat */ }
+        }
+        send("state", snapshot());
+      })
+      .catch(() => send("state", snapshot()));
+  } else if (state.sessionId && state.cwd && !live.get(state.sessionId)?.attached) {
+    attachSession(state.sessionId, state.cwd).then(() => send("state", snapshot())).catch(() => {});
   }
   return { ...snapshot(), composers: readJson(dataFile('composer.json'), {}), acceptedItems: recovery().acceptedItems || [] };
 });
@@ -963,7 +1099,7 @@ ipcMain.handle("load-chat", async (_event, payload) => {
     refreshSessions();
     refreshSkills();
     refreshContext();
-    send("transcript", { sessionId: id, messages, live: Boolean(slot.running) });
+    send("transcript", { sessionId: id, messages, live: Boolean(slot.running), turn: turnInfo(id) });
     send("state", snapshot());
     return snapshot();
   } finally {
@@ -1317,9 +1453,35 @@ ipcMain.handle("cancel", async (_event, sessionId) => {
 ipcMain.handle("set-model", async (_event, modelId) => {
   state.modelId = modelId;
   saveSettings({ modelId });
-  if (state.sessionId && acp.alive) {
-    await acp.setModel(state.sessionId, modelId);
+  const sessionId = state.sessionId;
+  const cwd = cwdOfSession(sessionId) || state.cwd;
+  if (sessionId && cwd) {
+    await attachSession(sessionId, cwd);
+    await acp.setModel(sessionId, modelId);
+    await applyPreferredEffort(sessionId);
   }
+  send("state", snapshot());
+  return snapshot();
+});
+
+ipcMain.handle("set-effort", async (_event, effort) => {
+  const sessionId = state.sessionId;
+  const cwd = cwdOfSession(sessionId) || state.cwd;
+  if (sessionId && cwd) await attachSession(sessionId, cwd);
+  else await ensureAgent();
+  const value = resolvedEffort(effort);
+  if (!value) throw new Error("不支持这个思考强度");
+  if (sessionId && acp.alive && value !== state.effort?.current) {
+    try {
+      const result = await acp.setConfigOption(sessionId, "reasoning_effort", value);
+      applyConfig(result);
+    } catch (err) {
+      throw effortError(err);
+    }
+  }
+  saveSettings({ effort: value });
+  if (state.effort) state.effort = { ...state.effort, current: value };
+  else state.effort = { current: value, options: defaultEffortOptions() };
   send("state", snapshot());
   return snapshot();
 });
@@ -1359,9 +1521,17 @@ ipcMain.handle("reorder-chats", async (_event, { cwd, order }) => {
 });
 
 ipcMain.handle("set-permission-mode", async (_event, mode) => {
-  const value = ["agent", "plan", "yolo"].includes(mode) ? mode : "agent";
+  const value = normalizeMode(mode);
   state.permissionMode = value;
   saveSettings({ permissionMode: value });
+  for (const [id, slot] of live) {
+    if (!slot.attached) continue;
+    if (slot.running) {
+      slot.pendingMode = value;
+      continue;
+    }
+    await syncSessionMode(id);
+  }
   send("state", snapshot());
   return snapshot();
 });
@@ -1470,6 +1640,16 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
   const old = preferences(loadSettings());
   saveSettings(next);
   state.permissionMode = next.permissionMode;
+  for (const [id, slot] of live) {
+    if (!slot.attached || slot.running) continue;
+    await syncSessionMode(id);
+  }
+  if (next.effort && next.effort !== old.effort) {
+    const want = resolvedEffort(next.effort);
+    if (state.effort) state.effort = { ...state.effort, current: want };
+    else state.effort = { current: want, options: defaultEffortOptions() };
+    await applyPreferredEffort(state.sessionId);
+  }
   state.settingsWarning = '';
   if (old.autoCompact !== next.autoCompact) try {
   // Grok reads this section for its own automatic compaction as well.

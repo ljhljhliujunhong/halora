@@ -14,6 +14,8 @@ const { buildContext, rememberCompaction } = require("../electron/context.cjs");
 const { canonicalCwd, readTranscript, recordTurnDuration } = require("../electron/sessions.cjs");
 const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require("../electron/files.cjs");
 const { looksLikeFile } = require("../src/resource-hint.mjs");
+const { agentSpawnArgs, sessionMeta, modeSyncCommands } = require("../electron/permission-mode.cjs");
+const { normalizeEffort, clampEffort, parseConfigOptions, configFromResult, effortFromSummary, defaultEffortOptions } = require("../electron/effort.cjs");
 const writeJson = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data));
@@ -115,15 +117,26 @@ function mainHarness(options = {}) {
     cancelled = [];
     loads = [];
     prompts = [];
+    commands = [];
     answers = [];
     answerPermission(id, option) { this.answers.push([id, option]); }
     async setModel() {}
-    async loadSession(id) {
-      this.loads.push(id);
+    async setConfigOption(sessionId, configId, value) {
+      this.config = { sessionId, configId, value };
       return {};
     }
-    async prompt(id) {
+    async newSession(cwd, mode) {
+      this.created = { cwd, mode };
+      return { sessionId: "created-session" };
+    }
+    async loadSession(id, cwd, mode) {
+      this.loads.push(id);
+      this.loaded = { id, cwd, mode };
+      return {};
+    }
+    async prompt(id, text) {
       this.prompts.push(id);
+      this.commands.push(text);
       return {};
     }
     cancel(id) {
@@ -422,6 +435,32 @@ test("send-prompt records duration and compact does not", async () => {
   assert.equal(row.user, "hello there");
 });
 
+test('cancel then steer emits separate turn clocks and rejects the old completion', async () => {
+  const f = fixture('duration', 'steering');
+  const h = mainHarness();
+  h.state.cwd = f.cwd; h.state.sessionId = f.id;
+  const oldGen = h.beginTurn(f.id, f.cwd, { user: 'first' });
+  const first = h.snapshot().activeTurns[f.id];
+  const update = { sessionId: f.id, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'reply' } } };
+  h.acp.emit('notification', 'session/update', update);
+  await h.handlers.get('cancel')(null, f.id);
+  const nextGen = h.beginTurn(f.id, f.cwd, { user: 'steered' });
+  const next = h.snapshot().activeTurns[f.id];
+  assert.notEqual(first.turnId, next.turnId);
+  assert.equal(h.endTurn(f.id, oldGen), false);
+  assert.equal(h.snapshot().activeTurns[f.id].turnId, next.turnId);
+  h.acp.emit('notification', 'session/update', update);
+  assert.equal(h.events.filter(e => e.type === 'update').at(-1).payload.turn.turnId, next.turnId);
+  assert.equal(h.endTurn(f.id, nextGen), true);
+  const ends = h.events.filter(e => e.type === 'turn-end');
+  assert.equal(ends.length, 2);
+  assert.equal(ends[0].payload.turnId, first.turnId);
+  assert.equal(ends[1].payload.turnId, next.turnId);
+  assert.equal(h.snapshot().activeTurns[f.id], undefined);
+  const recorded = fs.readFileSync(path.join(f.dir, 'halora-turns.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(recorded.map(r => r.user), ['first', 'steered']);
+});
+
 test("startup shows last saved quota before a live fetch", async () => {
   const h = mainHarness();
   h.saveSettings({
@@ -528,4 +567,162 @@ test("looksLikeFile accepts real files and rejects emails and sites", () => {
   assert.equal(looksLikeFile("https://luma.com/l0jfxz91"), "");
   assert.equal(looksLikeFile("luma.com"), "");
   assert.equal(looksLikeFile("qq.com"), "");
+});
+
+test("permission modes map onto Grok spawn, session meta, and slash sync", () => {
+  assert.deepEqual(agentSpawnArgs().slice(0, 4), ["--permission-mode", "default", "agent", "--no-leader"]);
+  assert.deepEqual(sessionMeta("yolo"), { yoloMode: true });
+  assert.deepEqual(sessionMeta("agent"), { yoloMode: false });
+  assert.deepEqual(sessionMeta("plan"), { yoloMode: false });
+  assert.deepEqual(modeSyncCommands("agent", "yolo"), ["/always-approve"]);
+  assert.deepEqual(modeSyncCommands("yolo", "agent"), ["/always-approve"]);
+  assert.deepEqual(modeSyncCommands("agent", "plan"), ["/plan"]);
+  assert.deepEqual(modeSyncCommands("plan", "agent"), ["/plan"]);
+  assert.deepEqual(modeSyncCommands("yolo", "plan"), ["/always-approve", "/plan"]);
+  assert.deepEqual(modeSyncCommands("agent", "agent"), []);
+});
+
+test("switching the picker actually tells Grok, and yolo still auto-answers", async () => {
+  const f = fixture("modes", "live");
+  const h = mainHarness();
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.state.permissionMode = "agent";
+  await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  assert.equal(h.acp.loaded.mode, "agent");
+  assert.deepEqual(h.acp.commands.filter(Boolean), []);
+  await h.handlers.get("set-permission-mode")(null, "yolo");
+  assert.deepEqual(h.acp.commands.filter(Boolean), ["/always-approve"]);
+  assert.equal(h.snapshot().permissionMode, "yolo");
+  h.acp.emit("permission", {
+    requestId: 7,
+    params: {
+      sessionId: f.id,
+      toolCall: { title: "删除文件" },
+      options: [
+        { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    },
+  });
+  assert.deepEqual(h.acp.answers, [[7, "allow-once"]]);
+  h.acp.commands.length = 0;
+  await h.handlers.get("set-permission-mode")(null, "plan");
+  assert.deepEqual(h.acp.commands.filter(Boolean), ["/always-approve", "/plan"]);
+  h.acp.created = null;
+  h.state.permissionMode = "yolo";
+  await h.handlers.get("new-chat")(null, f.cwd);
+  assert.equal(h.acp.created.mode, "yolo");
+});
+
+test("reasoning effort is parsed from ACP options and sent as set_config_option", async () => {
+  assert.equal(normalizeEffort("Extra high"), "xhigh");
+  assert.equal(normalizeEffort("最高"), "xhigh");
+  const parsed = parseConfigOptions([{
+    configId: "reasoning_effort",
+    category: "thought_level",
+    currentValue: "high",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "high", name: "High" },
+      { value: "xhigh", name: "Extra high" },
+    ],
+  }]);
+  assert.equal(parsed.current, "high");
+  assert.deepEqual(parsed.options.map((item) => item.id), ["low", "high", "xhigh"]);
+  const reversed = parseConfigOptions([{
+    configId: "reasoning_effort",
+    currentValue: "xhigh",
+    options: [
+      { value: "xhigh", name: "Extra high" },
+      { value: "high", name: "High" },
+      { value: "medium", name: "Medium" },
+      { value: "low", name: "Low" },
+    ],
+  }]);
+  assert.equal(reversed.current, "xhigh");
+  assert.deepEqual(reversed.options.map((item) => item.id), ["low", "medium", "high", "xhigh"]);
+  const live = parseConfigOptions([{
+    id: "reasoning_effort",
+    name: "Reasoning Effort",
+    category: "thought_level",
+    type: "select",
+    currentValue: "xhigh",
+    options: [
+      { value: "xhigh", name: "Extra High Effort" },
+      { value: "high", name: "High Effort" },
+      { value: "medium", name: "Medium Effort" },
+      { value: "low", name: "Low Effort" },
+    ],
+  }]);
+  assert.equal(live.current, "xhigh");
+  assert.deepEqual(live.options.map((item) => item.id), ["low", "medium", "high", "xhigh"]);
+  assert.ok(!defaultEffortOptions().some((item) => item.id === "minimal"));
+  assert.equal(clampEffort("minimal", live.options), "low");
+  assert.equal(clampEffort("xhigh", live.options), "xhigh");
+  assert.equal(configFromResult({ configOptions: [{ configId: "reasoning_effort", currentValue: "xhigh" }] }).current, "xhigh");
+  assert.equal(effortFromSummary({ reasoning_effort: "xhigh" }).current, "xhigh");
+  const f = fixture("effort", "chat");
+  writeJson(path.join(f.dir, "summary.json"), { ...f.summary, reasoning_effort: "high" });
+  const h = mainHarness();
+  h.saveSettings({ effort: "minimal" });
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.acp.setConfigOption = async (sessionId, configId, value) => {
+    h.acp.config = { sessionId, configId, value };
+    return {
+      configOptions: [{
+        configId: "reasoning_effort",
+        category: "thought_level",
+        currentValue: value?.value || value,
+        options: [
+          { value: "xhigh", name: "Extra high" },
+          { value: "high", name: "High" },
+          { value: "medium", name: "Medium" },
+          { value: "low", name: "Low" },
+        ],
+      }],
+    };
+  };
+  await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  assert.equal(h.snapshot().effort.current, "high");
+  const snap = await h.handlers.get("set-effort")(null, "xhigh");
+  assert.equal(h.acp.config.configId, "reasoning_effort");
+  assert.equal(h.acp.config.value?.value || h.acp.config.value, "xhigh");
+  assert.equal(snap.effort.current, "xhigh");
+  assert.ok(snap.effort.options.some((item) => item.id === "xhigh" && item.label === "最高"));
+  const clamped = await h.handlers.get("set-effort")(null, "minimal");
+  assert.equal(h.acp.config.value?.value || h.acp.config.value, "low");
+  assert.equal(clamped.effort.current, "low");
+  h.acp.setConfigOption = async () => {
+    throw Object.assign(new Error("Invalid params"), { payload: { data: "unknown reasoning_effort value" } });
+  };
+  await assert.rejects(() => h.handlers.get("set-effort")(null, "high"), /当前模型不支持这个思考强度/);
+  h.acp.setConfigOption = async () => {
+    throw Object.assign(new Error("Invalid params"), { payload: { data: "data did not match any variant of untagged enum SessionConfigOptionValue" } });
+  };
+  await assert.rejects(() => h.handlers.get("set-effort")(null, "medium"), /思考强度没能改成功/);
+  const g = mainHarness();
+  g.state.cwd = f.cwd;
+  g.state.sessionId = f.id;
+  g.acp.setConfigOption = async (sessionId, configId, value) => {
+    g.acp.config = { sessionId, configId, value };
+    return {
+      configOptions: [{
+        id: "reasoning_effort",
+        category: "thought_level",
+        currentValue: value,
+        options: [
+          { value: "xhigh", name: "Extra high" },
+          { value: "high", name: "High" },
+          { value: "medium", name: "Medium" },
+          { value: "low", name: "Low" },
+        ],
+      }],
+    };
+  };
+  const attached = await g.handlers.get("set-effort")(null, "xhigh");
+  assert.ok(g.acp.loads.includes(f.id));
+  assert.equal(g.acp.config.value, "xhigh");
+  assert.equal(attached.effort.current, "xhigh");
 });

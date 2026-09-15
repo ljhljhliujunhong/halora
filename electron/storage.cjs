@@ -22,11 +22,15 @@ function writeJson(file, value) { atomicWrite(file, JSON.stringify(value, null, 
 const DEFAULTS = Object.freeze({
   modelId: 'grok-4.6', permissionMode: 'agent', autoCompact: 85,
   sendKey: 'enter', fontSize: 14, theme: 'light', confirmExit: true,
-  checkpoints: true, defaultCwd: '',
+  checkpoints: true, defaultCwd: '', effort: '',
 });
 function preferences(raw = {}) {
   const out = { ...DEFAULTS };
   if (typeof raw.modelId === 'string' && raw.modelId.trim()) out.modelId = raw.modelId.slice(0, 100);
+  if (typeof raw.effort === 'string') {
+    const effort = raw.effort.trim().toLowerCase();
+    if (['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort)) out.effort = effort;
+  }
   if (['agent', 'plan', 'yolo'].includes(raw.permissionMode)) out.permissionMode = raw.permissionMode;
   if (['enter', 'ctrl-enter'].includes(raw.sendKey)) out.sendKey = raw.sendKey;
   if (['light', 'dark', 'system'].includes(raw.theme)) out.theme = raw.theme;

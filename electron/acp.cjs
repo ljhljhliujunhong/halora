@@ -3,6 +3,7 @@ const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { agentSpawnArgs, sessionMeta } = require("./permission-mode.cjs");
 
 class AcpClient extends EventEmitter {
   constructor() {
@@ -21,7 +22,7 @@ class AcpClient extends EventEmitter {
 
   start(bin) {
     this.stop();
-    this.proc = spawn(bin, ["agent", "--no-leader", "stdio"], {
+    this.proc = spawn(bin, agentSpawnArgs(), {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: { ...process.env },
@@ -179,20 +180,34 @@ class AcpClient extends EventEmitter {
     );
   }
 
-  newSession(cwd) {
-    return this.request("session/new", { cwd, mcpServers: [] }, { timeoutMs: 20000 });
+  newSession(cwd, mode) {
+    return this.request("session/new", { cwd, mcpServers: [], _meta: sessionMeta(mode) }, { timeoutMs: 20000 });
   }
 
-  loadSession(sessionId, cwd) {
+  loadSession(sessionId, cwd, mode) {
     return this.request(
       "session/load",
-      { sessionId, cwd, mcpServers: [] },
+      { sessionId, cwd, mcpServers: [], _meta: sessionMeta(mode) },
       { timeoutMs: 20000 }
     );
   }
 
   setModel(sessionId, modelId) {
     return this.request("session/set_model", { sessionId, modelId }, { timeoutMs: 10000 });
+  }
+
+  async setConfigOption(sessionId, configId, value) {
+    const raw = String(value?.value ?? value ?? "");
+    try {
+      return await this.request("session/set_config_option", { sessionId, configId, value: raw }, { timeoutMs: 10000 });
+    } catch (err) {
+      if (!/invalid params|unknown/i.test(String(err.message || err))) throw err;
+      return this.request(
+        "session/set_config_option",
+        { sessionId, configId, type: "id", value: raw },
+        { timeoutMs: 10000 }
+      );
+    }
   }
 
   async prompt(sessionId, text, images = [], files = []) {
@@ -245,4 +260,4 @@ class AcpClient extends EventEmitter {
   }
 }
 
-module.exports = { AcpClient };
+module.exports = { AcpClient, agentSpawnArgs, sessionMeta };

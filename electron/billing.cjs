@@ -161,9 +161,19 @@ function parseQuota(billing, settings, resets) {
   const config = billing?.config || billing || {};
   const period = config.currentPeriod || {};
   const products = Array.isArray(config.productUsage) ? config.productUsage : [];
-  const build = products.find((item) => /grokbuild/i.test(String(item.product || "")));
-  const value = build?.usagePercent ?? config.creditUsagePercent;
-  const percent = value == null ? NaN : Number(value);
+  const build = products.find((item) => /grok_?build/i.test(String(item.product || "")));
+  // The unified allowance is shared across products. Prefer its total usage.
+  let value = config.creditUsagePercent ?? build?.usagePercent;
+  const validPeriod = /^USAGE_PERIOD_TYPE_(WEEKLY|MONTHLY)$/.test(period.type || '') &&
+    Number.isFinite(Date.parse(period.start)) && Date.parse(period.end) > Date.parse(period.start);
+  const creditShape = config.isUnifiedBillingUser === true && validPeriod &&
+    ['onDemandCap', 'onDemandUsed', 'prepaidBalance'].every(key =>
+      config[key] && typeof config[key] === 'object' && !Array.isArray(config[key]));
+  // ProtoJSON omits scalar zeroes. Only default a recognized credits response,
+  // never an empty response, explicit null, or a different product's usage.
+  if (value === undefined && !Object.hasOwn(config, 'creditUsagePercent') &&
+      creditShape && products.length === 0) value = 0;
+  const percent = typeof value === 'number' || (typeof value === 'string' && value.trim()) ? Number(value) : NaN;
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null;
   return {
     percent: Math.max(0, Math.min(100, Math.round(percent))),
@@ -237,7 +247,7 @@ async function fetchQuota({ force } = {}) {
       fetchResets(auth.key).catch(() => null),
     ]);
     const next = parseQuota(billing, settings, resets);
-    if (!next) throw new Error('额度接口格式已变化');
+    if (!next) throw new Error('额度接口未返回有效用量，请稍后重试');
     if (next) cached = { at: Date.now(), value: next };
     return cached.value;
   })().finally(() => {

@@ -25,7 +25,7 @@ const LOCAL_COMMANDS = [
   { name: "context", title: "上下文", local: "context", kind: "cmd" },
   { name: "session-info", aliases: ["status", "info"], title: "会话信息", local: "context", kind: "cmd" },
   { name: "plan", title: "规划", kind: "cmd" },
-  { name: "effort", title: "思考力度", hint: "low|medium|high", kind: "cmd" },
+  { name: "effort", title: "思考力度", hint: "低|中|高|最高", kind: "cmd" },
   { name: "always-approve", title: "始终允许", kind: "cmd" },
   { name: "imagine", title: "生图", hint: "画面描述", kind: "cmd" },
   { name: "usage", title: "用量", kind: "cmd" },

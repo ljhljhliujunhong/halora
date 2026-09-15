@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "./markdown.js";
-import { applyUpdate } from "./transcript.js";
+import { applyTimedUpdate, stampActiveAssistant, finishTimedTurn, finishActiveTurn } from './turn-timing.mjs';
 import {
   collectMentions,
   compactHint,
@@ -969,6 +969,7 @@ export function App() {
     context: null,
     quota: null,
     permissionMode: "agent",
+    effort: null,
   });
   const [threads, setThreads] = useState({});
   const [draft, setDraft] = useState("");
@@ -1011,6 +1012,7 @@ export function App() {
   const [showQuota, setShowQuota] = useState(false);
   const [showMode, setShowMode] = useState(false);
   const [showModel, setShowModel] = useState(false);
+  const [effortDraft, setEffortDraft] = useState("");
   const [showSkills, setShowSkills] = useState(false);
   const [skillQuery, setSkillQuery] = useState("");
   const [pendingImport, setPendingImport] = useState("");
@@ -1027,8 +1029,9 @@ export function App() {
   const filesRef = useRef({});
   const queuesStore = useRef({});
   const sendingStore = useRef({});
-  const turnStartRef = useRef({});
-  const prevRunningRef = useRef(new Set());
+  const activeTurnsRef = useRef({});
+  const [quotaRefreshing, setQuotaRefreshing] = useState(false);
+  const quotaRefreshingRef = useRef(false);
   const runningRef = useRef(new Set());
   const [now, setNow] = useState(() => Date.now());
   const inputRef = useRef(null);
@@ -1075,6 +1078,7 @@ export function App() {
         setQueue(queuesStore.current[key] || []);
         queueRef.current = queuesStore.current[key] || [];
         setPermissionItems(next.permissions || []);
+        activeTurnsRef.current = next.activeTurns || {};
         setComposerReady(true);
         if (typeof next.sidebarCollapsed === "boolean") setCollapsed(next.sidebarCollapsed);
       } catch (err) {
@@ -1083,16 +1087,28 @@ export function App() {
     })();
     off = api.onEvent((event) => {
       if (event.type === "state") {
+        if (event.payload.activeTurns) activeTurnsRef.current = event.payload.activeTurns;
         setAppState((prev) => ({ ...prev, ...event.payload }));
         if (typeof event.payload?.sidebarCollapsed === "boolean") {
           setCollapsed(event.payload.sidebarCollapsed);
         }
+      }
+      if (event.type === 'turn-start') {
+        const turn = event.payload;
+        activeTurnsRef.current = { ...activeTurnsRef.current, [turn.sessionId]: turn };
+        setNow(Date.now());
+      }
+      if (event.type === 'turn-end') {
+        const turn = event.payload;
+        activeTurnsRef.current = finishActiveTurn(activeTurnsRef.current, turn);
+        setThreads(prev => ({ ...prev, [turn.sessionId]: finishTimedTurn(prev[turn.sessionId] || [], turn) }));
       }
       if (event.type === 'permissions') setPermissionItems(event.payload || []);
       if (event.type === "transcript") {
         const payload = event.payload;
         const sid = payload?.sessionId || sessionIdRef.current;
         const msgs = Array.isArray(payload) ? payload : payload?.messages || [];
+        const turn = payload?.turn || activeTurnsRef.current[sid];
         const keepLive = Boolean(payload?.live) || runningRef.current.has(sid);
         if (sid === sessionIdRef.current) {
           stickBottom.current = true;
@@ -1102,7 +1118,7 @@ export function App() {
           setCompactPhases((prev) => ({ ...prev, [sid]: "" }));
           setThreads((prev) => {
             if (keepLive && prev[sid]?.length) return prev;
-            return { ...prev, [sid]: msgs };
+            return { ...prev, [sid]: stampActiveAssistant(msgs, turn) };
           });
         }
       }
@@ -1113,13 +1129,9 @@ export function App() {
         const chunk = update?.content?.text || "";
         if (update?.sessionUpdate === "user_message_chunk" && compactHint(chunk) != null) return;
         if (!sid) return;
+        const turn = payload.turn || activeTurnsRef.current[sid];
         setThreads((prev) => {
-          const list = applyUpdate(prev[sid] || [], update);
-          const start = turnStartRef.current[sid];
-          if (start) {
-            const last = [...list].reverse().find((item) => item.role === "assistant");
-            if (last && !last.startedAt && !last.endedAt) last.startedAt = start;
-          }
+          const list = applyTimedUpdate(prev[sid] || [], update, turn);
           return { ...prev, [sid]: list };
         });
       }
@@ -1232,42 +1244,6 @@ export function App() {
     return () => clearInterval(timer);
   }, [appState.running, appState.sessionId]);
 
-  useEffect(() => {
-    const next = new Set(appState.runningIds || []);
-    if (appState.running && appState.sessionId) next.add(appState.sessionId);
-    const prev = prevRunningRef.current;
-    for (const id of prev) {
-      if (next.has(id)) continue;
-      const started = turnStartRef.current[id];
-      const ended = Date.now();
-      setThreads((current) => {
-        const list = current[id];
-        if (!list?.length) return current;
-        const copy = list.map((item) => ({ ...item }));
-        let target = -1;
-        for (let i = copy.length - 1; i >= 0; i -= 1) {
-          if (copy[i].role !== "assistant") continue;
-          if (copy[i].endedAt) break;
-          if (copy[i].startedAt || started) {
-            target = i;
-            break;
-          }
-        }
-        if (target < 0) return current;
-        const startAt = copy[target].startedAt || started || ended;
-        copy[target] = {
-          ...copy[target],
-          startedAt: startAt,
-          endedAt: ended,
-          durationMs: Math.max(0, ended - startAt),
-        };
-        return { ...current, [id]: copy };
-      });
-      delete turnStartRef.current[id];
-    }
-    prevRunningRef.current = next;
-  }, [appState.running, appState.runningIds, appState.sessionId]);
-
   const pinToBottom = () => {
     const el = scroller.current;
     if (!el) return;
@@ -1339,7 +1315,7 @@ export function App() {
     : null;
   const liveAssistantId = liveAssistant?.id || "";
   const pendingDuration = appState.running
-    ? formatDuration(now - (turnStartRef.current[appState.sessionId] || now))
+    ? formatDuration(now - (activeTurnsRef.current[appState.sessionId]?.startedAt || now))
     : "";
   const projects = appState.projects?.length
     ? appState.projects
@@ -1836,7 +1812,6 @@ export function App() {
     const id = sid || item.sessionId || sessionIdRef.current;
     const cwd = item.cwd || cwdRef.current;
     setError("");
-    if (!item.compact && id) turnStartRef.current[id] = Date.now();
     if (item.compact) {
       if (id) setCompactPhases((prev) => ({ ...prev, [id]: "start" }));
       try {
@@ -1969,6 +1944,35 @@ export function App() {
           setAttachments([]);
         }
         compactChat(parsed.rest);
+        return;
+      }
+      if (cmd?.name === "always-approve") {
+        if (usingDraft) {
+          setDraft("");
+          setAttachments([]);
+        }
+        await changeMode(appState.permissionMode === "yolo" ? "agent" : "yolo");
+        return;
+      }
+      if (cmd?.name === "plan" && !parsed.rest) {
+        if (usingDraft) {
+          setDraft("");
+          setAttachments([]);
+        }
+        await changeMode(appState.permissionMode === "plan" ? "agent" : "plan");
+        return;
+      }
+      if (cmd?.name === "effort") {
+        if (usingDraft) {
+          setDraft("");
+          setAttachments([]);
+        }
+        const level = String(parsed.rest || "").trim();
+        if (!level) {
+          setShowModel(true);
+          return;
+        }
+        await changeEffort(level);
         return;
       }
       if (cmd?.name === "rewind") {
@@ -2360,6 +2364,19 @@ export function App() {
     }
   };
 
+  const changeEffort = async (id) => {
+    if (!id || id === appState.effort?.current) return;
+    setError("");
+    try {
+      const next = await api.setEffort(id);
+      setAppState((prev) => ({ ...prev, ...next }));
+      setEffortDraft(next.effort?.current || id);
+    } catch (err) {
+      setEffortDraft(appState.effort?.current || "");
+      setError(friendlyError(err));
+    }
+  };
+
   const changeMode = async (id) => {
     setShowMode(false);
     try {
@@ -2377,6 +2394,11 @@ export function App() {
       : [];
   const currentModel =
     modelList.find((model) => model.id === appState.modelId) || modelList[0] || null;
+  const effort = appState.effort;
+  const effortOptions = effort?.options || [];
+  const effortCurrent = effortDraft || effort?.current || "";
+  const effortIndex = Math.max(0, effortOptions.findIndex((item) => item.id === effortCurrent));
+  const effortLabel = effortOptions[effortIndex]?.label || "";
 
   const headerRight = (
     <div className="top-actions">
@@ -2387,17 +2409,45 @@ export function App() {
             className={`model-btn ${showModel ? "open" : ""}`}
             onClick={() => {
               setShowMode(false);
+              setEffortDraft(appState.effort?.current || "");
               setShowModel((open) => !open);
             }}
             aria-label="切换模型"
           >
             <span className="model-name">{currentModel.name || currentModel.id}</span>
+            {effortLabel ? <span className="model-effort">{effortLabel}</span> : null}
             <span className="model-chev">
               <IconChevron down />
             </span>
           </button>
           {showModel ? (
             <div className="model-pop">
+              {effortOptions.length ? (
+                <div className="effort-pane">
+                  <div className="effort-head">
+                    <span>思考</span>
+                    <strong>{effortLabel}</strong>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, effortOptions.length - 1)}
+                    step={1}
+                    value={effortIndex}
+                    aria-label="思考强度"
+                    onChange={(event) => {
+                      const next = effortOptions[Number(event.target.value)];
+                      if (next) setEffortDraft(next.id);
+                    }}
+                    onPointerUp={() => {
+                      if (effortDraft) changeEffort(effortDraft);
+                    }}
+                    onKeyUp={() => {
+                      if (effortDraft) changeEffort(effortDraft);
+                    }}
+                  />
+                </div>
+              ) : null}
               {modelList.map((model) => (
                 <button
                   type="button"
@@ -2850,7 +2900,7 @@ export function App() {
                         message,
                         runningTurn,
                         now,
-                        turnStartRef.current[appState.sessionId]
+                        activeTurnsRef.current[appState.sessionId]?.startedAt
                       );
                       const folded = Boolean(String(message.thought || "").trim() || message.tools?.length);
                       return (
@@ -3039,7 +3089,17 @@ export function App() {
                           {quota.percent != null && <CtxRow label="剩余" value={`${Math.max(0, 100 - quota.percent)}%`} />}
                           {quota.error && <p className="ctx-note">{quota.error}</p>}
                           {quota.updatedAt && <CtxRow label="更新于" value={new Date(quota.updatedAt).toLocaleString()} />}
-                          <button type="button" className="ctx-compact" onClick={() => api.refreshQuota().then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>刷新额度</button>
+                          <button type="button" className="ctx-compact" disabled={quotaRefreshing} aria-busy={quotaRefreshing} onClick={async () => {
+                            if (quotaRefreshingRef.current) return;
+                            quotaRefreshingRef.current = true;
+                            setQuotaRefreshing(true);
+                            try {
+                              const next = await api.refreshQuota();
+                              // A quota request can finish after another turn starts.
+                              setAppState(p => ({ ...p, quota: next.quota }));
+                            } catch (e) { setError(friendlyError(e)); }
+                            finally { quotaRefreshingRef.current = false; setQuotaRefreshing(false); }
+                          }}>{quotaRefreshing ? '刷新中…' : '刷新额度'}</button>
                           {Number.isFinite(quota.resets) ? (
                             <CtxRow label="重置卡" value={`${quota.resets} 张`} />
                           ) : null}

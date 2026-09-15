@@ -94,6 +94,7 @@ export function Workbench({ page, state, onState, onClose }) {
     {page === 'settings' && <form className="wb-settings" onSubmit={e => { e.preventDefault(); act(async () => { onState(await api.savePreferences(prefs)); setResult({text:'设置已保存'}); }); }}>
       <h2>对话</h2>
       <label>默认模型<select value={prefs.modelId || ''} onChange={e => field('modelId', e.target.value)}>{[...new Set([prefs.modelId, ...(state.models || []).map(m => m.id)])].filter(Boolean).map(id => <option key={id}>{id}</option>)}</select></label>
+      <label>默认思考强度<select value={prefs.effort === 'minimal' || prefs.effort === 'none' ? 'low' : (prefs.effort || '')} onChange={e => field('effort', e.target.value)}><option value="">跟随模型</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">最高</option></select></label>
       <label>默认权限模式<select value={prefs.permissionMode || 'agent'} onChange={e => field('permissionMode', e.target.value)}><option value="agent">代理 · 执行前询问</option><option value="plan">规划</option><option value="yolo">自动允许工具操作</option></select></label>
       <label>自动压缩阈值 <span><input type="number" min="50" max="95" value={prefs.autoCompact ?? 85} onChange={e => field('autoCompact', Number(e.target.value))} /> %</span></label>
       <label>发送快捷键<select value={prefs.sendKey || 'enter'} onChange={e => field('sendKey', e.target.value)}><option value="enter">Enter</option><option value="ctrl-enter">Ctrl + Enter</option></select></label>
