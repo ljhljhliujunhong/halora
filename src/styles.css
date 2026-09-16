@@ -1985,5 +1985,95 @@ select {
 }
 .permission-launch { position: fixed; right: 24px; top: 80px; z-index: 100; box-shadow: 0 4px 16px #0003; }
 .permission-dock { position: fixed; right: 24px; top: 124px; z-index: 101; width: min(440px, 80vw); max-height: 65vh; overflow: auto; box-shadow: 0 8px 32px #0005; border-radius: 16px; }
+.permission-dock.plan,
+.permission-dock.question { width: min(560px, 86vw); max-height: 78vh; }
 .permission-dock .modal { width: 100%; box-sizing: border-box; }
 .permission-dock code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.permission-note { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+
+/* Plan drafted in plan mode, shown inside the assistant reply. */
+.plan-card {
+  margin: 4px 0 10px;
+  border: 1px solid rgba(201, 165, 106, 0.45);
+  border-left: 3px solid var(--gold);
+  border-radius: 12px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--gold-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.plan-card-head svg { width: 14px; height: 14px; }
+
+.plan-card-body { padding: 10px 14px 12px; font-size: 13.5px; }
+
+/* Plan approval panel. */
+.plan-view {
+  max-height: 44vh;
+  overflow: auto;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  font-size: 13.5px;
+}
+
+.plan-feedback {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2);
+  color: var(--text);
+  outline: none;
+}
+
+.plan-feedback:focus { border-color: var(--accent); }
+
+/* Clarifying questions. */
+.question-list { display: grid; gap: 14px; margin-bottom: 12px; }
+.question-text { margin: 0 0 8px; font-weight: 600; font-size: 14px; }
+.question-options { display: grid; gap: 6px; margin-bottom: 8px; }
+
+.question-option {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.question-option:hover { background: var(--bg-3); }
+.question-option.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(46, 184, 201, 0.16); }
+.question-option-label { font-weight: 600; font-size: 13.5px; }
+.question-option-desc { font-size: 12.5px; color: var(--muted); }
+
+.question-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.question-input:focus { border-color: var(--accent); }

@@ -168,6 +168,14 @@ export function applyUpdate(messages, update) {
     return next;
   }
 
+  // Sent by the main process when Grok hands a finished plan over for
+  // approval; the same text is also what the approval panel shows.
+  if (kind === "plan_ready") {
+    const plan = String(update.planContent || "");
+    if (plan.trim()) ensureAssistant(next).plan = plan;
+    return next;
+  }
+
   if (kind === "tool_call" || kind === "tool_call_update") {
     const assistant = ensureAssistant(next);
     const id = update.toolCallId;
@@ -195,6 +203,10 @@ export function applyUpdate(messages, update) {
       tool.images = [...(tool.images || []), ...imgs];
       assistant.images = [...(assistant.images || []), ...imgs];
     }
+    // The main process attaches the current plan.md text whenever a tool
+    // call edits it, so the plan is readable while it is still being drafted.
+    const plan = update._halora?.plan;
+    if (typeof plan === "string" && plan.trim()) assistant.plan = plan;
     return next;
   }
 

@@ -1013,6 +1013,38 @@ function recordTurnDuration(cwd, sessionId, turn) {
   }
 }
 
+// A plan-mode turn writes its proposal to `<session dir>/plan.md` and then
+// hands it over through `exit_plan_mode`. Grok's history only keeps the tool
+// calls, so on reload the plan text is picked up from disk and hung on the
+// assistant message that produced it.
+function planTool(tool) {
+  const kind = String(tool?.kind || "").toLowerCase();
+  const title = String(tool?.title || "").toLowerCase();
+  if (kind === "exit_plan_mode" || /exit_plan_mode|plan mode exited|plan: exit/.test(title)) return true;
+  const file = tool?.input?.file_path || tool?.input?.target_file || tool?.input?.path || "";
+  if (/plan\.md$/i.test(String(file))) return true;
+  return /plan\.md`?$/i.test(title);
+}
+
+function attachPlan(messages, dir) {
+  let plan = "";
+  try {
+    plan = fs.readFileSync(path.join(dir, "plan.md"), "utf8");
+  } catch {
+    return messages;
+  }
+  if (!plan.trim()) return messages;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    if ((message.tools || []).some(planTool)) {
+      message.plan = plan;
+      break;
+    }
+  }
+  return messages;
+}
+
 function readTranscript(cwd, sessionId) {
   const dir = sessionDir(cwd, sessionId);
   if (!dir) return [];
@@ -1020,9 +1052,9 @@ function readTranscript(cwd, sessionId) {
   const historyFile = path.join(dir, "chat_history.jsonl");
   if (fs.existsSync(historyFile)) {
     appendHistory(messages, foldChatHistory(readJsonl(historyFile), dir));
-    return attachTurnDurations(messages, dir);
+    return attachPlan(attachTurnDurations(messages, dir), dir);
   }
-  if (messages.length) return attachTurnDurations(messages, dir);
+  if (messages.length) return attachPlan(attachTurnDurations(messages, dir), dir);
   const file = path.join(dir, "updates.jsonl");
   if (!fs.existsSync(file)) return [];
   const updates = [];
@@ -1040,7 +1072,7 @@ function readTranscript(cwd, sessionId) {
       updates.push(update);
     }
   }
-  return attachTurnDurations(foldUpdates(updates), dir);
+  return attachPlan(attachTurnDurations(foldUpdates(updates), dir), dir);
 }
 
 function renameSession(cwd, sessionId, title) {

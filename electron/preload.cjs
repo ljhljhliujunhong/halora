@@ -72,8 +72,8 @@ contextBridge.exposeInMainWorld("workshop", {
   setModel: (id) => ipcRenderer.invoke("set-model", id),
   setEffort: (effort) => ipcRenderer.invoke("set-effort", effort),
   setPermissionMode: (mode) => ipcRenderer.invoke("set-permission-mode", mode),
-  answerPermission: (requestId, optionId) =>
-    ipcRenderer.invoke("answer-permission", { requestId, optionId }),
+  answerPermission: (requestId, optionId, extra) =>
+    ipcRenderer.invoke("answer-permission", { requestId, optionId, ...(extra || {}) }),
   login: () => ipcRenderer.invoke("login"),
   onEvent: (handler) => {
     const listen = (_event, payload) => handler(payload);

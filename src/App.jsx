@@ -106,6 +106,15 @@ function optionLabel(option) {
   return option.name || "确定";
 }
 
+function permissionLaunchLabel(items) {
+  const count = items.length;
+  const first = items[0];
+  if (count === 1 && first?.kind === "plan") return "计划等你定";
+  if (count === 1 && first?.kind === "question") return "Grok 有问题问你";
+  if (items.every((item) => item.kind === "plan")) return `计划等你定 · ${count}`;
+  return `待处理 · ${count}`;
+}
+
 function optionTone(option) {
   const kind = String(option.kind || option.name || "").toLowerCase();
   if (kind.includes("reject") || kind.includes("deny")) return "ghost";
@@ -951,6 +960,202 @@ function RunFold({ thought, tools, cwd, running, duration }) {
   );
 }
 
+// The plan Grok drafted in plan mode, rendered inline so it reads like part
+// of the reply rather than a diff buried in a tool card.
+function PlanCard({ text }) {
+  const openPreview = usePreview();
+  if (!String(text || "").trim()) return null;
+  return (
+    <section className="plan-card" aria-label="计划">
+      <header className="plan-card-head">
+        <IconProcess />
+        <span>计划</span>
+      </header>
+      <div
+        className="md plan-card-body"
+        onClick={(event) => onMarkdownClick(event, openPreview)}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      />
+    </section>
+  );
+}
+
+// Decision panel for `exit_plan_mode`: approve, send it back with notes, or
+// drop the plan and leave plan mode.
+function PlanApproval({ item, onAnswer, onError }) {
+  const [feedback, setFeedback] = useState("");
+  const [revising, setRevising] = useState(false);
+  const [sending, setSending] = useState(false);
+  useEffect(() => {
+    setFeedback("");
+    setRevising(false);
+    setSending(false);
+  }, [item.requestId]);
+  const answer = async (optionId, extra) => {
+    setSending(true);
+    try {
+      await onAnswer(item.requestId, optionId, extra);
+    } catch (err) {
+      onError(friendlyError(err));
+      setSending(false);
+    }
+  };
+  const hasPlan = Boolean(String(item.plan || "").trim());
+  return (
+    <>
+      <h2>{item.title}</h2>
+      {hasPlan ? (
+        <div className="plan-view md" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.plan) }} />
+      ) : (
+        <p className="permission-note">Grok 想直接退出规划模式。</p>
+      )}
+      {revising ? (
+        <textarea
+          className="plan-feedback"
+          value={feedback}
+          autoFocus
+          rows={3}
+          placeholder="想怎么改"
+          onChange={(event) => setFeedback(event.target.value)}
+        />
+      ) : null}
+      <div className="modal-actions">
+        {revising ? (
+          <>
+            <button
+              type="button"
+              className="btn primary"
+              disabled={sending || !feedback.trim()}
+              onClick={() => answer("revise", { feedback })}
+            >
+              发回修改
+            </button>
+            <button type="button" className="btn ghost" disabled={sending} onClick={() => setRevising(false)}>
+              返回
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn primary" disabled={sending} onClick={() => answer("approved")}>
+              {hasPlan ? "按计划开始" : "退出规划"}
+            </button>
+            <button type="button" className="btn gold" disabled={sending} onClick={() => setRevising(true)}>
+              要求修改
+            </button>
+            <button type="button" className="btn ghost" disabled={sending} onClick={() => answer("abandoned")}>
+              放弃计划
+            </button>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+// Answer sheet for `ask_user_question`. Each question takes one of Grok's
+// options or a typed answer; multi-select questions accept several.
+function QuestionSheet({ item, onAnswer, onError }) {
+  const [picked, setPicked] = useState({});
+  const [typed, setTyped] = useState({});
+  const [sending, setSending] = useState(false);
+  useEffect(() => {
+    setPicked({});
+    setTyped({});
+    setSending(false);
+  }, [item.requestId]);
+  const questions = item.questions || [];
+  const answerFor = (question) => {
+    const custom = String(typed[question.question] || "").trim();
+    const chosen = picked[question.question] || [];
+    if (question.multiSelect) {
+      const list = custom ? [...chosen, custom] : chosen;
+      return list.length ? list : null;
+    }
+    return custom || chosen[0] || null;
+  };
+  const complete = questions.every((question) => answerFor(question) != null);
+  const toggle = (question, label) => {
+    setPicked((prev) => {
+      const current = prev[question.question] || [];
+      if (question.multiSelect) {
+        return {
+          ...prev,
+          [question.question]: current.includes(label) ? current.filter((v) => v !== label) : [...current, label],
+        };
+      }
+      return { ...prev, [question.question]: current[0] === label ? [] : [label] };
+    });
+  };
+  const answer = async (optionId, extra) => {
+    setSending(true);
+    try {
+      await onAnswer(item.requestId, optionId, extra);
+    } catch (err) {
+      onError(friendlyError(err));
+      setSending(false);
+    }
+  };
+  const submit = () => {
+    const answers = {};
+    for (const question of questions) answers[question.question] = answerFor(question);
+    answer("accepted", { answers });
+  };
+  return (
+    <>
+      <h2>{item.title}</h2>
+      <div className="question-list">
+        {questions.map((question) => (
+          <div key={question.question} className="question">
+            <p className="question-text">{question.question}</p>
+            {question.options.length ? (
+              <div className="question-options">
+                {question.options.map((option) => {
+                  const active = (picked[question.question] || []).includes(option.label);
+                  return (
+                    <button
+                      key={option.label}
+                      type="button"
+                      className={`question-option ${active ? "active" : ""}`}
+                      aria-pressed={active}
+                      onClick={() => toggle(question, option.label)}
+                    >
+                      <span className="question-option-label">{option.label}</span>
+                      {option.description ? <span className="question-option-desc">{option.description}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            <input
+              className="question-input"
+              value={typed[question.question] || ""}
+              placeholder={question.options.length ? "或者自己写" : "输入回答"}
+              onChange={(event) => setTyped((prev) => ({ ...prev, [question.question]: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && complete && !sending) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="btn primary" disabled={sending || !complete} onClick={submit}>
+          发送回答
+        </button>
+        <button type="button" className="btn ghost" disabled={sending} onClick={() => answer("chat_about_this")}>
+          在对话里回答
+        </button>
+        <button type="button" className="btn ghost" disabled={sending} onClick={() => answer("skip_interview")}>
+          跳过
+        </button>
+      </div>
+    </>
+  );
+}
+
 export function App() {
   const [appState, setAppState] = useState({
     cwd: null,
@@ -980,6 +1185,7 @@ export function App() {
   const [permissionItems, setPermissionItems] = useState([]);
   const [selectedPermission, setSelectedPermission] = useState(null);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const seenAsksRef = useRef(new Set());
   const [composerReady, setComposerReady] = useState(false);
   const composerSaveRef = useRef(null);
   const composerKeyRef = useRef(null);
@@ -1103,7 +1309,18 @@ export function App() {
         activeTurnsRef.current = finishActiveTurn(activeTurnsRef.current, turn);
         setThreads(prev => ({ ...prev, [turn.sessionId]: finishTimedTurn(prev[turn.sessionId] || [], turn) }));
       }
-      if (event.type === 'permissions') setPermissionItems(event.payload || []);
+      if (event.type === 'permissions') {
+        const items = event.payload || [];
+        setPermissionItems(items);
+        // A plan or a question blocks the turn until answered, so bring the
+        // panel up the first time each one shows.
+        const fresh = items.filter((item) => (item.kind === "plan" || item.kind === "question") && !seenAsksRef.current.has(item.requestId));
+        if (fresh.length) {
+          for (const item of fresh) seenAsksRef.current.add(item.requestId);
+          setSelectedPermission(fresh[0].requestId);
+          setPermissionsOpen(true);
+        }
+      }
       if (event.type === "transcript") {
         const payload = event.payload;
         const sid = payload?.sessionId || sessionIdRef.current;
@@ -1787,16 +2004,12 @@ export function App() {
           .map((item) => ({ name: item.name, path: item.path, kind: item.kind }))
       : [];
     if (!text && !images.length && !files.length) return null;
-    let outbound = text;
-    if (usingDraft && appState.permissionMode === "plan" && text && !text.startsWith("/")) {
-      outbound = `/plan ${text}`;
-    }
     return {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       sessionId: sessionIdRef.current,
       cwd: cwdRef.current,
       text,
-      outbound,
+      outbound: text,
       images,
       files,
       mentions: collectMentions(text),
@@ -1954,12 +2167,17 @@ export function App() {
         await changeMode(appState.permissionMode === "yolo" ? "agent" : "yolo");
         return;
       }
-      if (cmd?.name === "plan" && !parsed.rest) {
+      if (cmd?.name === "plan") {
         if (usingDraft) {
           setDraft("");
           setAttachments([]);
         }
-        await changeMode(appState.permissionMode === "plan" ? "agent" : "plan");
+        if (!parsed.rest) {
+          await changeMode(appState.permissionMode === "plan" ? "agent" : "plan");
+          return;
+        }
+        if (appState.permissionMode !== "plan") await changeMode("plan");
+        await sendPrompt(parsed.rest);
         return;
       }
       if (cmd?.name === "effort") {
@@ -2916,6 +3134,7 @@ export function App() {
                         </>
                       );
                     })()}
+                    {message.plan ? <PlanCard text={message.plan} /> : null}
                     {message.images?.length ? (
                       <div className="pics">
                         {message.images.map((image, index) => (
@@ -3312,32 +3531,52 @@ export function App() {
         </div>
       ) : null}
 
-      {permission && <button type="button" className="permission-launch btn primary" onClick={() => setPermissionsOpen(p => !p)}>待授权 · {permissionItems.length}</button>}
+      {permission && (
+        <button type="button" className={`permission-launch btn ${permission.kind === "plan" ? "gold" : "primary"}`} onClick={() => setPermissionsOpen(p => !p)}>
+          {permissionLaunchLabel(permissionItems)}
+        </button>
+      )}
       {permission && permissionsOpen ? (
-        <aside className="permission-dock" aria-label="权限请求">
+        <aside className={`permission-dock ${permission.kind || "permission"}`} aria-label="等你处理">
           <div className="modal">
             <button type="button" className="btn ghost" onClick={() => setPermissionsOpen(false)}>收起</button>
             <div className="permission-tabs">{permissionItems.map(item => <button key={item.requestId} className={`btn ${item === permission ? 'primary' : 'ghost'}`} onClick={() => { setSelectedPermission(item.requestId); setPermissionError(''); }}>{item.sessionTitle || item.sessionId?.slice(0, 8) || '当前对话'}</button>)}</div>
             <p className="permission-origin">{permission.cwd} · {permissionItems.length} 项待处理</p>
-            <h2>{permission.title}</h2>
             {permissionError && <p role="alert">{permissionError}</p>}
-            {inputPreview(permission.input) ? <code>{inputPreview(permission.input)}</code> : null}
-            <div className="modal-actions">
-              {(permission.options?.length
-                ? permission.options
-                : [
-                    { id: "__cancel__", name: "取消请求", kind: "reject_once" },
-                  ]
-              ).map((option) => (
-                <button
-                  key={option.id}
-                  className={`btn ${optionTone(option)}`}
-                  onClick={() => api.answerPermission(permission.requestId, option.id).catch(e => setPermissionError(friendlyError(e)))}
-                >
-                  {optionLabel(option)}
-                </button>
-              ))}
-            </div>
+            {permission.kind === "plan" ? (
+              <PlanApproval
+                item={permission}
+                onAnswer={(requestId, optionId, extra) => api.answerPermission(requestId, optionId, extra)}
+                onError={setPermissionError}
+              />
+            ) : permission.kind === "question" ? (
+              <QuestionSheet
+                item={permission}
+                onAnswer={(requestId, optionId, extra) => api.answerPermission(requestId, optionId, extra)}
+                onError={setPermissionError}
+              />
+            ) : (
+              <>
+                <h2>{permission.title}</h2>
+                {inputPreview(permission.input) ? <code>{inputPreview(permission.input)}</code> : null}
+                <div className="modal-actions">
+                  {(permission.options?.length
+                    ? permission.options
+                    : [
+                        { id: "__cancel__", name: "取消请求", kind: "reject_once" },
+                      ]
+                  ).map((option) => (
+                    <button
+                      key={option.id}
+                      className={`btn ${optionTone(option)}`}
+                      onClick={() => api.answerPermission(permission.requestId, option.id).catch(e => setPermissionError(friendlyError(e)))}
+                    >
+                      {optionLabel(option)}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </aside>
       ) : null}

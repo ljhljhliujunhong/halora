@@ -32,7 +32,7 @@ const { fetchQuota, hasAuth } = require("./billing.cjs");
 const { listSkills, listSkillLibrary, importSkillsFrom, removeUserSkill } = require("./skills.cjs");
 const { extFromMime, fileToImage, toDataUrl } = require("./media.cjs");
 const { searchFiles, resolveMentions, collectMentions, classifyDroppedPath, classifyDroppedPaths, locateResource } = require("./files.cjs");
-const { normalizeMode, modeSyncCommands } = require("./permission-mode.cjs");
+const { normalizeMode, modeSyncSteps, planRequest, questionRequest } = require("./permission-mode.cjs");
 const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions } = require("./effort.cjs");
 
 const acp = new AcpClient();
@@ -78,7 +78,11 @@ function updateRecovery(id, patch) {
   if (patch?.itemId) value.acceptedItems = [...new Set([...(value.acceptedItems || []), patch.itemId])].slice(-1000);
   writeJson(dataFile('recovery.json'), value);
 }
-const permissions = new PermissionQueue((id, option) => acp.answerPermission(id, option), items => {
+const permissions = new PermissionQueue((id, option, item, extra) => {
+  if (item?.kind === "plan") return acp.answerPlan(id, option, extra?.feedback);
+  if (item?.kind === "question") return acp.answerQuestion(id, option, extra?.answers);
+  return acp.answerPermission(id, option);
+}, items => {
   state.permission = items[0] || null;
   send('permissions', items);
   send('permission', state.permission);
@@ -156,27 +160,45 @@ function rememberedMode(slot) {
   return "agent";
 }
 
+// Bring one live session in line with the picker. Neither call starts a turn,
+// so this is safe while Grok is busy: toggling plan mode mid-turn just takes
+// effect when the turn ends, exactly like Shift+Tab in Grok's own TUI.
 async function syncSessionMode(id) {
   const slot = live.get(id);
-  if (!id || !slot?.attached || slot.running || !acp.alive) return;
+  if (!id || !slot?.attached || !acp.alive) return;
   const want = normalizeMode(state.permissionMode);
-  const cmds = modeSyncCommands(rememberedMode(slot), want);
-  if (!cmds.length) {
-    slot.grokYolo = want === "yolo";
-    slot.grokPlan = want === "plan";
-    return;
-  }
-  slot.running = true;
+  const steps = modeSyncSteps(rememberedMode(slot), want);
   try {
-    for (const cmd of cmds) await acp.prompt(id, cmd);
-    slot.grokYolo = want === "yolo";
-    slot.grokPlan = want === "plan";
+    if (steps.yolo != null) {
+      acp.setYolo(id, steps.yolo);
+      slot.grokYolo = steps.yolo;
+    }
+    if (steps.mode) {
+      await acp.setMode(id, steps.mode);
+      slot.grokPlan = steps.mode === "plan";
+    }
   } catch {
     // Keep the last known Grok flags; the next switch or send retries.
-  } finally {
-    slot.running = false;
-    slot.pendingMode = null;
   }
+}
+
+// Grok reports its own mode changes (our set_mode, the agent entering plan
+// mode by itself, a plan being approved or abandoned). Mirror them so the
+// picker shows what the viewed session is actually doing.
+function applyGrokMode(sessionId, modeId) {
+  const slot = live.get(sessionId);
+  if (!slot) return;
+  const plan = modeId === "plan";
+  slot.grokPlan = plan;
+  if (sessionId !== state.sessionId) return;
+  const current = normalizeMode(state.permissionMode);
+  let next = current;
+  if (plan && current !== "plan") next = "plan";
+  else if (!plan && current === "plan") next = slot.grokYolo ? "yolo" : "agent";
+  if (next === current) return;
+  state.permissionMode = next;
+  saveSettings({ permissionMode: next });
+  send("state", snapshot());
 }
 
 function runningIds() {
@@ -257,10 +279,6 @@ function endTurn(id, gen) {
   slot.running = false;
   slot.compactTurn = false;
   if (recovery().turns?.[id]?.status === 'running') updateRecovery(id, null);
-  if (slot.pendingMode) {
-    slot.pendingMode = null;
-    syncSessionMode(id).catch(() => {});
-  }
   return true;
 }
 
@@ -292,18 +310,28 @@ function resetLive(keepIds = false) {
   if (!keepIds) live.clear();
 }
 
+function followSessionMode(id) {
+  const slot = live.get(id);
+  if (!slot || id !== state.sessionId) return;
+  const actual = rememberedMode(slot);
+  if (normalizeMode(state.permissionMode) === actual) return;
+  state.permissionMode = actual;
+}
+
 async function attachSession(id, cwd) {
   await ensureAgent();
   const slot = liveSlot(id, cwd);
-  if (slot.attached && acp.alive) return null;
-  const loaded = await acp.loadSession(id, cwd, state.permissionMode);
+  if (slot.attached && acp.alive) {
+    if (id === state.sessionId) followSessionMode(id);
+    return null;
+  }
+  const loaded = await acp.loadSession(id, cwd);
   slot.attached = true;
   slot.cwd = cwd || slot.cwd;
-  slot.grokYolo = state.permissionMode === "yolo";
   slot.grokPlan = planModeActive(slot.cwd, id);
   applyInit(loaded || {});
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
-  await syncSessionMode(id);
+  if (id === state.sessionId) followSessionMode(id);
   return loaded;
 }
 
@@ -921,9 +949,14 @@ acp.on("notification", (method, params) => {
       handleSessionNotice(params);
       return;
     }
+    if (update.sessionUpdate === "current_mode_update") {
+      applyGrokMode(sessionId, update.currentModeId);
+      return;
+    }
     const slot = live.get(sessionId);
     if ([...(acp.draining?.values() || [])].some(d => d.sessionId === sessionId)) return;
     if (slot?.running) slot.gotUpdate = true;
+    attachPlanText(update, sessionId);
     send("update", { sessionId, update, turn: turnInfo(sessionId) });
     return;
   }
@@ -953,6 +986,106 @@ function pickAllowOption(options) {
   return list.filter(opt => score(opt) > 0).sort((a, b) => score(b) - score(a))[0] || null;
 }
 
+// In plan mode Grok drafts into `<session dir>/plan.md`. When a tool call
+// touches that file, ride the current text along so the chat can show the
+// plan as it takes shape instead of a collapsed diff card.
+function planFilePath(sessionId) {
+  const dir = sessionDir(cwdOfSession(sessionId), sessionId);
+  return dir ? path.join(dir, "plan.md") : "";
+}
+
+function isPlanFile(candidate, sessionId) {
+  if (!candidate) return false;
+  const file = String(candidate);
+  if (!/plan\.md$/i.test(file)) return false;
+  const expected = planFilePath(sessionId);
+  return expected ? samePath(file, expected) : /[\\/]sessions[\\/]/i.test(file);
+}
+
+function attachPlanText(update, sessionId) {
+  if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return;
+  const input = update.rawInput || {};
+  const diff = (update.content || []).find((item) => item?.type === "diff" && isPlanFile(item.path, sessionId));
+  const location = (update.locations || []).find((item) => isPlanFile(item?.path, sessionId));
+  const target = diff || location || isPlanFile(input.file_path || input.target_file || input.path, sessionId);
+  if (!target) return;
+  let text = "";
+  const done = String(update.status || "").toLowerCase() === "completed";
+  if (done) {
+    try { text = fs.readFileSync(planFilePath(sessionId), "utf8"); } catch { text = ""; }
+  }
+  if (!text && diff && typeof diff.newText === "string" && !String(diff.oldText || "")) text = diff.newText;
+  if (!text && typeof input.content === "string" && !input.old_string) text = input.content;
+  if (!text.trim()) return;
+  update._halora = { ...(update._halora || {}), plan: text };
+}
+
+function sessionTitleOf(sessionId) {
+  return state.projects.flatMap(p => p.sessions || []).find(s => s.id === sessionId)?.title || sessionId?.slice(0, 8) || '对话';
+}
+
+// Grok pauses the turn on `_x.ai/exit_plan_mode` until the user decides. Put
+// the finished plan in the chat and queue the decision next to permissions.
+acp.on("plan-approval", ({ requestId, params }) => {
+  const req = planRequest(params);
+  const sessionId = req.sessionId;
+  let plan = req.planContent;
+  const file = req.planFilePath || planFilePath(sessionId);
+  if (!plan.trim() && file) {
+    try { plan = fs.readFileSync(file, "utf8"); } catch { plan = ""; }
+  }
+  const slot = live.get(sessionId);
+  if (slot?.running) slot.gotUpdate = true;
+  send("update", {
+    sessionId,
+    update: { sessionUpdate: "plan_ready", toolCallId: req.toolCallId, planContent: plan },
+    turn: turnInfo(sessionId),
+  });
+  permissions.add({
+    requestId,
+    kind: "plan",
+    sessionId,
+    title: plan.trim() ? "计划写好了" : "还没有写出计划",
+    plan,
+    toolCallId: req.toolCallId,
+    input: null,
+    options: [
+      { id: "approved", name: "按计划开始", kind: "approve" },
+      { id: "revise", name: "要求修改", kind: "revise" },
+      { id: "abandoned", name: "放弃计划", kind: "abandon" },
+    ],
+    cwd: cwdOfSession(sessionId),
+    sessionTitle: sessionTitleOf(sessionId),
+  });
+});
+
+// `_x.ai/ask_user_question` carries one or more multiple-choice questions.
+// The answer is keyed by question text; multi-select questions take arrays.
+acp.on("question", ({ requestId, params }) => {
+  const req = questionRequest(params);
+  const sessionId = req.sessionId;
+  const questions = req.questions;
+  if (!questions.length) {
+    acp.answerQuestion(requestId, "chat_about_this");
+    return;
+  }
+  permissions.add({
+    requestId,
+    kind: "question",
+    sessionId,
+    title: questions.length > 1 ? `Grok 想先确认 ${questions.length} 件事` : "Grok 想先确认一下",
+    questions,
+    input: null,
+    options: [
+      { id: "accepted", name: "发送回答", kind: "accept" },
+      { id: "chat_about_this", name: "在对话里回答", kind: "chat" },
+      { id: "skip_interview", name: "跳过", kind: "skip" },
+    ],
+    cwd: cwdOfSession(sessionId),
+    sessionTitle: sessionTitleOf(sessionId),
+  });
+});
+
 acp.on("permission", ({ requestId, params }) => {
   const options = (params.options || []).map((opt) => ({
     id: opt.optionId,
@@ -973,7 +1106,7 @@ acp.on("permission", ({ requestId, params }) => {
     input: params.toolCall?.rawInput || params.toolCall || null,
     options,
     cwd: cwdOfSession(params.sessionId),
-    sessionTitle: state.projects.flatMap(p => p.sessions || []).find(s => s.id === params.sessionId)?.title || params.sessionId?.slice(0, 8) || '对话',
+    sessionTitle: sessionTitleOf(params.sessionId),
   });
 });
 
@@ -1085,6 +1218,8 @@ ipcMain.handle("load-chat", async (_event, payload) => {
   try {
     await switchProject(cwd, { clearSession: false });
     const messages = readTranscript(state.cwd, id);
+    state.sessionId = id;
+    saveSettings({ lastSessionId: id });
     const slot = liveSlot(id, state.cwd);
     if (!slot.attached) {
       try {
@@ -1093,9 +1228,9 @@ ipcMain.handle("load-chat", async (_event, payload) => {
       } catch {
         // still show the saved chat
       }
+    } else {
+      followSessionMode(id);
     }
-    state.sessionId = id;
-    saveSettings({ lastSessionId: id });
     refreshSessions();
     refreshSkills();
     refreshContext();
@@ -1486,11 +1621,6 @@ ipcMain.handle("set-effort", async (_event, effort) => {
   return snapshot();
 });
 
-ipcMain.handle("answer-permission", async (_event, { requestId, optionId }) => {
-  permissions.resolve(requestId, optionId);
-  return { ok: true };
-});
-
 ipcMain.handle("search-files", async (_event, payload) => {
   if (!state.cwd) return [];
   return searchFiles(state.cwd, payload?.query || "", { hidden: Boolean(payload?.hidden) });
@@ -1524,16 +1654,15 @@ ipcMain.handle("set-permission-mode", async (_event, mode) => {
   const value = normalizeMode(mode);
   state.permissionMode = value;
   saveSettings({ permissionMode: value });
-  for (const [id, slot] of live) {
-    if (!slot.attached) continue;
-    if (slot.running) {
-      slot.pendingMode = value;
-      continue;
-    }
-    await syncSessionMode(id);
-  }
+  const id = state.sessionId;
+  if (id && live.get(id)?.attached) await syncSessionMode(id);
   send("state", snapshot());
   return snapshot();
+});
+
+ipcMain.handle("answer-permission", async (_event, { requestId, optionId, feedback, answers }) => {
+  permissions.resolve(requestId, optionId, { feedback, answers });
+  return { ok: true };
 });
 
 ipcMain.handle("set-sidebar", async (_event, collapsed) => {
@@ -1640,10 +1769,9 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
   const old = preferences(loadSettings());
   saveSettings(next);
   state.permissionMode = next.permissionMode;
-  for (const [id, slot] of live) {
-    if (!slot.attached || slot.running) continue;
-    await syncSessionMode(id);
-  }
+  const id = state.sessionId;
+  const slot = id && live.get(id);
+  if (slot?.attached && !slot.running) await syncSessionMode(id);
   if (next.effort && next.effort !== old.effort) {
     const want = resolvedEffort(next.effort);
     if (state.effort) state.effort = { ...state.effort, current: want };

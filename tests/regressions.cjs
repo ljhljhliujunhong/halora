@@ -14,7 +14,7 @@ const { buildContext, rememberCompaction } = require("../electron/context.cjs");
 const { canonicalCwd, readTranscript, recordTurnDuration } = require("../electron/sessions.cjs");
 const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require("../electron/files.cjs");
 const { looksLikeFile } = require("../src/resource-hint.mjs");
-const { agentSpawnArgs, sessionMeta, modeSyncCommands } = require("../electron/permission-mode.cjs");
+const { agentSpawnArgs, sessionMeta, modeSyncSteps, planRequest, questionRequest, planReply, questionReply } = require("../electron/permission-mode.cjs");
 const { normalizeEffort, clampEffort, parseConfigOptions, configFromResult, effortFromSummary, defaultEffortOptions } = require("../electron/effort.cjs");
 const writeJson = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -119,7 +119,15 @@ function mainHarness(options = {}) {
     prompts = [];
     commands = [];
     answers = [];
+    modes = [];
+    yolos = [];
+    plans = [];
+    questions = [];
     answerPermission(id, option) { this.answers.push([id, option]); }
+    answerPlan(id, outcome, feedback) { this.plans.push([id, outcome, feedback]); }
+    answerQuestion(id, outcome, answers) { this.questions.push([id, outcome, answers]); }
+    async setMode(sessionId, modeId) { this.modes.push([sessionId, modeId]); return {}; }
+    setYolo(sessionId, enabled) { this.yolos.push([sessionId, enabled]); }
     async setModel() {}
     async setConfigOption(sessionId, configId, value) {
       this.config = { sessionId, configId, value };
@@ -569,30 +577,33 @@ test("looksLikeFile accepts real files and rejects emails and sites", () => {
   assert.equal(looksLikeFile("qq.com"), "");
 });
 
-test("permission modes map onto Grok spawn, session meta, and slash sync", () => {
+test("permission modes map onto Grok spawn, session meta, and ACP mode steps", () => {
   assert.deepEqual(agentSpawnArgs().slice(0, 4), ["--permission-mode", "default", "agent", "--no-leader"]);
   assert.deepEqual(sessionMeta("yolo"), { yoloMode: true });
   assert.deepEqual(sessionMeta("agent"), { yoloMode: false });
   assert.deepEqual(sessionMeta("plan"), { yoloMode: false });
-  assert.deepEqual(modeSyncCommands("agent", "yolo"), ["/always-approve"]);
-  assert.deepEqual(modeSyncCommands("yolo", "agent"), ["/always-approve"]);
-  assert.deepEqual(modeSyncCommands("agent", "plan"), ["/plan"]);
-  assert.deepEqual(modeSyncCommands("plan", "agent"), ["/plan"]);
-  assert.deepEqual(modeSyncCommands("yolo", "plan"), ["/always-approve", "/plan"]);
-  assert.deepEqual(modeSyncCommands("agent", "agent"), []);
+  assert.deepEqual(modeSyncSteps("agent", "yolo"), { yolo: true });
+  assert.deepEqual(modeSyncSteps("yolo", "agent"), { yolo: false });
+  assert.deepEqual(modeSyncSteps("agent", "plan"), { mode: "plan" });
+  assert.deepEqual(modeSyncSteps("plan", "agent"), { mode: "default" });
+  assert.deepEqual(modeSyncSteps("yolo", "plan"), { yolo: false, mode: "plan" });
+  assert.deepEqual(modeSyncSteps("plan", "yolo"), { yolo: true, mode: "default" });
+  assert.deepEqual(modeSyncSteps("agent", "agent"), {});
 });
 
-test("switching the picker actually tells Grok, and yolo still auto-answers", async () => {
+test("switching the picker uses set_mode and the yolo notification, never a prompt", async () => {
   const f = fixture("modes", "live");
   const h = mainHarness();
   h.state.cwd = f.cwd;
   h.state.sessionId = f.id;
   h.state.permissionMode = "agent";
   await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
-  assert.equal(h.acp.loaded.mode, "agent");
-  assert.deepEqual(h.acp.commands.filter(Boolean), []);
+  assert.equal(h.acp.loaded.id, f.id);
+  assert.deepEqual(h.acp.modes, []);
+  assert.deepEqual(h.acp.yolos, []);
   await h.handlers.get("set-permission-mode")(null, "yolo");
-  assert.deepEqual(h.acp.commands.filter(Boolean), ["/always-approve"]);
+  assert.deepEqual(h.acp.yolos, [[f.id, true]]);
+  assert.deepEqual(h.acp.modes, []);
   assert.equal(h.snapshot().permissionMode, "yolo");
   h.acp.emit("permission", {
     requestId: 7,
@@ -606,13 +617,129 @@ test("switching the picker actually tells Grok, and yolo still auto-answers", as
     },
   });
   assert.deepEqual(h.acp.answers, [[7, "allow-once"]]);
-  h.acp.commands.length = 0;
   await h.handlers.get("set-permission-mode")(null, "plan");
-  assert.deepEqual(h.acp.commands.filter(Boolean), ["/always-approve", "/plan"]);
+  assert.deepEqual(h.acp.yolos, [[f.id, true], [f.id, false]]);
+  assert.deepEqual(h.acp.modes, [[f.id, "plan"]]);
+  assert.deepEqual(h.acp.commands.filter(Boolean), []);
+  assert.deepEqual(h.acp.prompts, []);
+  // Grok confirms with current_mode_update; leaving plan mode on its side
+  // (plan approved) flips the picker back without another round trip.
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } });
+  assert.equal(h.snapshot().permissionMode, "plan");
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "default" } });
+  assert.equal(h.snapshot().permissionMode, "agent");
+  assert.ok(!h.events.some((e) => e.type === "update" && e.payload?.update?.sessionUpdate === "current_mode_update"));
   h.acp.created = null;
   h.state.permissionMode = "yolo";
   await h.handlers.get("new-chat")(null, f.cwd);
   assert.equal(h.acp.created.mode, "yolo");
+});
+
+test("opening another chat does not push /plan or set_mode onto it", async () => {
+  const a = fixture("modes", "chat-a");
+  const b = fixture("modes", "chat-b");
+  fs.writeFileSync(path.join(a.dir, "plan_mode.json"), JSON.stringify({ state: "Active" }));
+  const h = mainHarness();
+  h.state.cwd = a.cwd;
+  h.state.permissionMode = "plan";
+  await h.handlers.get("load-chat")(null, { cwd: a.cwd, id: a.id });
+  assert.equal(h.snapshot().permissionMode, "plan");
+  assert.deepEqual(h.acp.modes, []);
+  assert.deepEqual(h.acp.prompts, []);
+  assert.deepEqual(h.acp.commands.filter(Boolean), []);
+  await h.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
+  assert.equal(h.snapshot().permissionMode, "agent");
+  assert.deepEqual(h.acp.modes, []);
+  assert.deepEqual(h.acp.prompts, []);
+  assert.deepEqual(h.acp.commands.filter(Boolean), []);
+});
+
+test("plan approval reaches the chat and the queue, and answers go back with feedback", async () => {
+  const f = fixture("modes", "approval");
+  const h = mainHarness();
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.state.permissionMode = "plan";
+  await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  h.events.length = 0;
+  h.acp.emit("plan-approval", { requestId: 11, params: { sessionId: f.id, toolCallId: "call-1", planContent: "# 方案\n- 第一步" } });
+  const ready = h.events.find((e) => e.type === "update" && e.payload?.update?.sessionUpdate === "plan_ready");
+  assert.equal(ready.payload.update.planContent, "# 方案\n- 第一步");
+  const item = h.snapshot().permissions[0];
+  assert.equal(item.kind, "plan");
+  assert.equal(item.plan, "# 方案\n- 第一步");
+  assert.equal(item.options.map((o) => o.id).join(","), "approved,revise,abandoned");
+  await assert.rejects(h.handlers.get("answer-permission")(null, { requestId: 11, optionId: "nope" }), /无效/);
+  await h.handlers.get("answer-permission")(null, { requestId: 11, optionId: "revise", feedback: "先别动数据库" });
+  assert.deepEqual(h.acp.plans, [[11, "revise", "先别动数据库"]]);
+  assert.equal(h.snapshot().permissions.length, 0);
+  // Plan text riding on a plan.md edit is forwarded for the live transcript.
+  fs.writeFileSync(path.join(f.dir, "plan.md"), "# 方案 v2\n");
+  h.events.length = 0;
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: {
+    sessionUpdate: "tool_call_update", toolCallId: "call-2", status: "completed",
+    content: [{ type: "diff", path: path.join(f.dir, "plan.md"), oldText: "", newText: "# 方案 v2\n" }],
+  } });
+  const forwarded = h.events.find((e) => e.type === "update" && e.payload?.update?.toolCallId === "call-2");
+  assert.equal(forwarded.payload.update._halora.plan, "# 方案 v2\n");
+  // Questions carry their choices and come back keyed by question text.
+  h.acp.emit("question", { requestId: 12, params: { sessionId: f.id, toolCallId: "call-3", questions: [
+    { question: "用哪个数据库？", options: [{ label: "SQLite", description: "零配置" }, { label: "Postgres" }], multiSelect: null },
+  ] } });
+  const ask = h.snapshot().permissions[0];
+  assert.equal(ask.kind, "question");
+  assert.equal(ask.questions[0].options[0].description, "零配置");
+  await h.handlers.get("answer-permission")(null, { requestId: 12, optionId: "accepted", answers: { "用哪个数据库？": "SQLite" } });
+  assert.deepEqual(h.acp.questions, [[12, "accepted", { "用哪个数据库？": "SQLite" }]]);
+  h.acp.emit("question", { requestId: 13, params: { sessionId: f.id, questions: [] } });
+  assert.deepEqual(h.acp.questions[1], [13, "chat_about_this", undefined]);
+  // Grok's live payload uses snake_case and may omit sessionId; both still
+  // have to land in the chat, not disappear into a tool card.
+  h.events.length = 0;
+  h.acp.emit("plan-approval", { requestId: 14, params: { session_id: f.id, plan_content: "# 蛇形字段\n- 可见" } });
+  const snake = h.events.find((e) => e.type === "update" && e.payload?.update?.sessionUpdate === "plan_ready");
+  assert.equal(snake.payload.update.planContent, "# 蛇形字段\n- 可见");
+  assert.equal(h.snapshot().permissions[0].plan, "# 蛇形字段\n- 可见");
+});
+
+test("plan and question replies match Grok's ACP payload shapes", () => {
+  assert.deepEqual(planRequest({ session_id: "s", plan_content: "# 方案" }), {
+    sessionId: "s",
+    toolCallId: null,
+    planContent: "# 方案",
+    planFilePath: "",
+  });
+  assert.deepEqual(planReply("approved"), { outcome: "approved", feedback: "" });
+  assert.deepEqual(planReply("revise", "改接口"), { outcome: "revise", feedback: "改接口" });
+  const asked = questionRequest({
+    sessionId: "s",
+    input: { questions: [{ question: "用哪个？", options: [{ label: "A", description: "一" }], multi_select: false }] },
+  });
+  assert.equal(asked.questions[0].question, "用哪个？");
+  assert.equal(asked.questions[0].options[0].description, "一");
+  assert.equal(questionReply("accepted", { "用哪个？": "A" }).type, "Accepted");
+  assert.equal(questionReply("chat_about_this").type, "ChatAboutThis");
+  assert.equal(questionReply("skip_interview").outcome, "skip_interview");
+});
+
+test("reopening a planned session shows the plan with the turn that wrote it", () => {
+  const f = fixture("modes", "history");
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "帮我规划" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "看了一下代码" }], tool_calls: [{ id: "c1", name: "read_file", arguments: JSON.stringify({ file_path: "a.js" }) }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "计划写好了" }], tool_calls: [
+      { id: "c2", name: "write", arguments: JSON.stringify({ file_path: path.join(f.dir, "plan.md"), content: "# 计划\n- 改 a.js" }) },
+      { id: "c3", name: "exit_plan_mode", arguments: "{}" },
+    ] }),
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "好，开始" }] }),
+    JSON.stringify({ type: "assistant", content: [{ type: "text", text: "做完了" }] }),
+  ].join("\n") + "\n");
+  fs.writeFileSync(path.join(f.dir, "plan.md"), "# 计划\n- 改 a.js\n");
+  const msgs = readTranscript(f.cwd, f.id);
+  const planned = msgs.filter((m) => m.plan);
+  assert.equal(planned.length, 1);
+  assert.match(planned[0].text, /计划写好了/);
+  assert.equal(planned[0].plan, "# 计划\n- 改 a.js\n");
 });
 
 test("reasoning effort is parsed from ACP options and sent as set_config_option", async () => {
