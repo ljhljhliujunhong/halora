@@ -182,23 +182,14 @@ async function syncSessionMode(id) {
   }
 }
 
-// Grok reports its own mode changes (our set_mode, the agent entering plan
-// mode by itself, a plan being approved or abandoned). Mirror them so the
-// picker shows what the viewed session is actually doing.
+// Grok reports its own mode (our set_mode, entering plan, a plan being
+// approved). Keep that on the session slot so the next send can resync.
+// Do not rewrite the picker or settings.json: those are the user's choice
+// and must survive attach, plan exit, and app restart.
 function applyGrokMode(sessionId, modeId) {
   const slot = live.get(sessionId);
   if (!slot) return;
-  const plan = modeId === "plan";
-  slot.grokPlan = plan;
-  if (sessionId !== state.sessionId) return;
-  const current = normalizeMode(state.permissionMode);
-  let next = current;
-  if (plan && current !== "plan") next = "plan";
-  else if (!plan && current === "plan") next = slot.grokYolo ? "yolo" : "agent";
-  if (next === current) return;
-  state.permissionMode = next;
-  saveSettings({ permissionMode: next });
-  send("state", snapshot());
+  slot.grokPlan = modeId === "plan";
 }
 
 function runningIds() {

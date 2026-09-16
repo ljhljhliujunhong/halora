@@ -622,17 +622,42 @@ test("switching the picker uses set_mode and the yolo notification, never a prom
   assert.deepEqual(h.acp.modes, [[f.id, "plan"]]);
   assert.deepEqual(h.acp.commands.filter(Boolean), []);
   assert.deepEqual(h.acp.prompts, []);
-  // Grok confirms with current_mode_update; leaving plan mode on its side
-  // (plan approved) flips the picker back without another round trip.
+  // Grok confirms with current_mode_update, including leaving plan after
+  // approval. That is session state, not the user's saved picker.
   h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } });
   assert.equal(h.snapshot().permissionMode, "plan");
   h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "default" } });
-  assert.equal(h.snapshot().permissionMode, "agent");
+  assert.equal(h.snapshot().permissionMode, "plan");
+  assert.equal(h.loadSettings().permissionMode, "plan");
   assert.ok(!h.events.some((e) => e.type === "update" && e.payload?.update?.sessionUpdate === "current_mode_update"));
   h.acp.created = null;
   h.state.permissionMode = "yolo";
   await h.handlers.get("new-chat")(null, f.cwd);
   assert.equal(h.acp.created.mode, "yolo");
+});
+
+test("saved permission mode survives Grok mode reports and a fresh launch", async () => {
+  const f = fixture("modes", "persist-mode");
+  const h = mainHarness();
+  h.state.cwd = f.cwd;
+  await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  await h.handlers.get("set-permission-mode")(null, "yolo");
+  assert.equal(h.loadSettings().permissionMode, "yolo");
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } });
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "default" } });
+  assert.equal(h.snapshot().permissionMode, "yolo");
+  assert.equal(h.loadSettings().permissionMode, "yolo");
+  await h.handlers.get("save-preferences")(null, { permissionMode: "plan" });
+  assert.equal(h.snapshot().permissionMode, "plan");
+  assert.equal(h.loadSettings().permissionMode, "plan");
+  h.acp.emit("notification", "session/update", { sessionId: f.id, update: { sessionUpdate: "current_mode_update", currentModeId: "default" } });
+  assert.equal(h.snapshot().permissionMode, "plan");
+
+  const restart = mainHarness();
+  restart.state.permissionMode = "agent";
+  const snap = await restart.handlers.get("get-state")();
+  assert.equal(snap.permissionMode, "plan");
+  assert.equal(snap.preferences.permissionMode, "plan");
 });
 
 test("opening another chat does not push /plan or set_mode onto it", async () => {
