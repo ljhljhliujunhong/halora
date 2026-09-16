@@ -310,28 +310,16 @@ function resetLive(keepIds = false) {
   if (!keepIds) live.clear();
 }
 
-function followSessionMode(id) {
-  const slot = live.get(id);
-  if (!slot || id !== state.sessionId) return;
-  const actual = rememberedMode(slot);
-  if (normalizeMode(state.permissionMode) === actual) return;
-  state.permissionMode = actual;
-}
-
 async function attachSession(id, cwd) {
   await ensureAgent();
   const slot = liveSlot(id, cwd);
-  if (slot.attached && acp.alive) {
-    if (id === state.sessionId) followSessionMode(id);
-    return null;
-  }
+  if (slot.attached && acp.alive) return null;
   const loaded = await acp.loadSession(id, cwd);
   slot.attached = true;
   slot.cwd = cwd || slot.cwd;
   slot.grokPlan = planModeActive(slot.cwd, id);
   applyInit(loaded || {});
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
-  if (id === state.sessionId) followSessionMode(id);
   return loaded;
 }
 
@@ -1228,8 +1216,6 @@ ipcMain.handle("load-chat", async (_event, payload) => {
       } catch {
         // still show the saved chat
       }
-    } else {
-      followSessionMode(id);
     }
     refreshSessions();
     refreshSkills();
@@ -1382,28 +1368,33 @@ ipcMain.handle("delete-chat", async (_event, { id, cwd }) => {
   if (maintenance) throw new Error('数据操作正在进行，请稍后再试');
   const target = cwd || state.cwd;
   if (!id || !target) throw new Error("找不到这次对话");
-  cancelLive(id);
-  await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === id).map(d => d.done));
-  live.delete(id);
-  if (state.sessionId === id) {
-    state.sessionId = null;
-    state.context = null;
-    send("transcript", { sessionId: id, messages: [] });
+  stopSessionWatch();
+  try {
+    cancelLive(id);
+    await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === id).map(d => d.done));
+    deleteSession(target, id, dataFile('trash'));
+    live.delete(id);
+    if (state.sessionId === id) {
+      state.sessionId = null;
+      state.context = null;
+      send("transcript", { sessionId: id, messages: [] });
+    }
+    const settings = loadSettings();
+    const titles = { ...(settings.sessionTitles || {}) };
+    delete titles[id];
+    saveSettings({
+      sessionTitles: titles,
+      pinnedChats: (settings.pinnedChats || []).filter((item) => item !== id),
+      chatOrder: dropFromChatOrder(settings.chatOrder, id),
+    });
+    maintenanceService.forgetComposer(app.getPath('userData'), id);
+    const savedRecovery = recovery();
+    savedRecovery.deletedSessions = [...new Set([...(savedRecovery.deletedSessions || []), id])];
+    writeJson(dataFile('recovery.json'), savedRecovery);
+    send('forget-composer', { sessionId: id });
+  } finally {
+    watchSessions();
   }
-  const settings = loadSettings();
-  const titles = { ...(settings.sessionTitles || {}) };
-  delete titles[id];
-  saveSettings({
-    sessionTitles: titles,
-    pinnedChats: (settings.pinnedChats || []).filter((item) => item !== id),
-    chatOrder: dropFromChatOrder(settings.chatOrder, id),
-  });
-  deleteSession(target, id, dataFile('trash'));
-  maintenanceService.forgetComposer(app.getPath('userData'), id);
-  const savedRecovery = recovery();
-  savedRecovery.deletedSessions = [...new Set([...(savedRecovery.deletedSessions || []), id])];
-  writeJson(dataFile('recovery.json'), savedRecovery);
-  send('forget-composer', { sessionId: id });
   refreshSessions();
   send("state", snapshot());
   return snapshot();
@@ -1517,6 +1508,7 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
   } else {
     liveSlot(sessionId, cwd);
     await attachSession(sessionId, cwd);
+    await syncSessionMode(sessionId);
   }
   const auto =
     shortenTitle(rawText) ||

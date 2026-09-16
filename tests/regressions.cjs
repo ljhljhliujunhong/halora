@@ -11,7 +11,7 @@ fs.mkdirSync(cache, { recursive: true });
 const root = fs.mkdtempSync(path.join(cache, "regression-"));
 process.env.GROK_HOME = path.join(root, "grok");
 const { buildContext, rememberCompaction } = require("../electron/context.cjs");
-const { canonicalCwd, readTranscript, recordTurnDuration } = require("../electron/sessions.cjs");
+const { canonicalCwd, readTranscript, recordTurnDuration, deleteSession, listProjects } = require("../electron/sessions.cjs");
 const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require("../electron/files.cjs");
 const { looksLikeFile } = require("../src/resource-hint.mjs");
 const { agentSpawnArgs, sessionMeta, modeSyncSteps, planRequest, questionRequest, planReply, questionReply } = require("../electron/permission-mode.cjs");
@@ -648,10 +648,27 @@ test("opening another chat does not push /plan or set_mode onto it", async () =>
   assert.deepEqual(h.acp.prompts, []);
   assert.deepEqual(h.acp.commands.filter(Boolean), []);
   await h.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
-  assert.equal(h.snapshot().permissionMode, "agent");
+  assert.equal(h.snapshot().permissionMode, "plan");
   assert.deepEqual(h.acp.modes, []);
   assert.deepEqual(h.acp.prompts, []);
   assert.deepEqual(h.acp.commands.filter(Boolean), []);
+});
+
+test("delete-chat buries a locked session so it disappears from the list", async () => {
+  const f = fixture("modes", "gone");
+  const trash = path.join(root, "trash");
+  assert.equal(deleteSession(f.cwd, f.id, trash), true);
+  const listed = listProjects({ known: [f.cwd] }).flatMap((p) => p.sessions.map((s) => s.id));
+  assert.ok(!listed.includes(f.id));
+  const buried = fs.readdirSync(trash).filter((name) => name.startsWith(f.id));
+  assert.equal(buried.length, 1);
+  assert.ok(fs.existsSync(path.join(trash, buried[0], "summary.json")));
+  const h = mainHarness();
+  const g = fixture("modes", "live-delete");
+  h.state.cwd = g.cwd;
+  await h.handlers.get("load-chat")(null, { cwd: g.cwd, id: g.id });
+  await h.handlers.get("delete-chat")(null, { id: g.id, cwd: g.cwd });
+  assert.equal((h.snapshot().projects.find((p) => canonicalCwd(p.cwd) === canonicalCwd(g.cwd))?.sessions || []).some((s) => s.id === g.id), false);
 });
 
 test("plan approval reaches the chat and the queue, and answers go back with feedback", async () => {

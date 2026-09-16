@@ -320,6 +320,41 @@ function listProjects(options = {}) {
   });
 }
 
+function busyError(err) {
+  return err && ["EPERM", "EBUSY", "EACCES"].includes(err.code);
+}
+
+function copySessionTree(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    if (entry.name.endsWith(".lock")) continue;
+    const src = path.join(from, entry.name);
+    const dest = path.join(to, entry.name);
+    if (entry.isDirectory()) copySessionTree(src, dest);
+    else fs.copyFileSync(src, dest);
+  }
+}
+
+function burySession(dir, trashRoot, sessionId) {
+  const dest = path.join(trashRoot, `${sessionId}-${Date.now()}-${require("node:crypto").randomUUID()}`);
+  fs.mkdirSync(trashRoot, { recursive: true });
+  try {
+    fs.renameSync(dir, dest);
+    return;
+  } catch (err) {
+    if (!busyError(err)) throw err;
+  }
+  copySessionTree(dir, dest);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 12, retryDelay: 80 });
+  } catch (err) {
+    if (!busyError(err)) throw err;
+    const summary = path.join(dir, "summary.json");
+    try { fs.unlinkSync(summary); } catch { /* still listed if this stays */ }
+    if (fs.existsSync(summary)) throw new Error("对话还在被占用，先停掉任务后再删");
+  }
+}
+
 function deleteSession(cwd, sessionId, trashRoot) {
   if (!cwd || !sessionId) return false;
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error('无效的会话编号');
@@ -328,10 +363,8 @@ function deleteSession(cwd, sessionId, trashRoot) {
   for (const variant of cwdVariants(cwd)) {
     const dir = path.join(root, encodeCwd(variant), sessionId);
     if (!fs.existsSync(dir)) continue;
-    if (trashRoot) {
-      fs.mkdirSync(trashRoot, { recursive: true });
-      fs.renameSync(dir, path.join(trashRoot, `${sessionId}-${Date.now()}-${require('node:crypto').randomUUID()}`));
-    } else fs.rmSync(dir, { recursive: true, force: true });
+    if (trashRoot) burySession(dir, trashRoot, sessionId);
+    else fs.rmSync(dir, { recursive: true, force: true, maxRetries: 12, retryDelay: 80 });
     deleted = true;
   }
   return deleted;
