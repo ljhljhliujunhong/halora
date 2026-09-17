@@ -1716,30 +1716,67 @@ ipcMain.on?.('save-composer-sync', (event, payload) => {
 });
 
 ipcMain.handle('reconnect', async () => { reconnectAttempts = 0; await ensureAgent(); send('state', snapshot()); return snapshot(); });
+function grokDialog(options) {
+  if (!win || win.isDestroyed?.()) return Promise.resolve({ response: 0 });
+  return dialog.showMessageBox(win, options);
+}
+
 ipcMain.handle('grok-check-update', () => grokUpdate.check(state.grokBin || findGrokBinary()));
 ipcMain.handle('grok-install-update', async () => {
-  if (runningIds().length || maintenance || projectLocks.size) throw new Error('请先停止所有运行中的任务');
+  if (maintenance) throw new Error('正在更新');
   const bin = state.grokBin || findGrokBinary();
   if (!bin) throw new Error('找不到 Grok Build');
+  if (runningIds().length || projectLocks.size) {
+    const answer = await grokDialog({
+      type: 'question',
+      title: '更新 Grok Build',
+      message: '更新会中断正在运行的任务。',
+      buttons: ['取消', '继续'],
+      defaultId: 1,
+      cancelId: 0,
+    });
+    if (answer.response !== 1) return null;
+    markInterrupted();
+    for (const [id, slot] of live) {
+      if (!slot.running) continue;
+      try { acp.cancel(id); } catch {}
+      endTurn(id, slot.gen);
+    }
+  }
   maintenance = true;
-  acp.stop();
   state.ready = false;
+  send('state', snapshot());
   try {
-    const info = await grokUpdate.install(bin);
-    const answer = await dialog.showMessageBox(win, {
-      type: 'info', title: '更新完成', message: '需要重启星环。',
-      buttons: ['稍后', '重启'], defaultId: 1, cancelId: 0,
+    await acp.stopAndWait();
+    let want = '';
+    try { want = (await grokUpdate.check(bin)).latest || ''; } catch {}
+    const info = await grokUpdate.install(bin, grokUpdate.runGrok, want);
+    const version = (!info.available && info.current) || info.latest || want;
+    const answer = await grokDialog({
+      type: 'info',
+      title: '更新完成',
+      message: version ? `Grok Build 已更新到 ${version}。` : 'Grok Build 已更新。',
+      detail: '重启星环后才会用上新版本。',
+      buttons: ['稍后', '重启'],
+      defaultId: 1,
+      cancelId: 0,
     });
     if (answer.response === 1) {
       quitting = true;
       app.relaunch();
       app.exit(0);
-      return { ...info, relaunched: true };
+      return { ...info, available: false, pendingRestart: true, relaunched: true };
     }
     ensureAgent().catch(() => send('state', snapshot()));
-    return { ...info, relaunched: false };
+    return { ...info, available: false, pendingRestart: true, relaunched: false };
   } catch (error) {
+    diagnostics.log(app.getPath('userData'), 'grok-update', error);
     ensureAgent().catch(() => send('state', snapshot()));
+    await grokDialog({
+      type: 'error',
+      title: '更新失败',
+      message: String(error.message || error),
+    });
     throw error;
   } finally { maintenance = false; }
 });

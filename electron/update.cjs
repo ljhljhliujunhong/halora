@@ -5,8 +5,13 @@ function runGrok(bin, args, timeout) {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.SMOKE_TEST;
   return new Promise((resolve, reject) => execFile(bin, args, {
-    windowsHide: true, encoding: 'utf8', timeout, maxBuffer: 2 * 1024 * 1024, env,
-  }, (error, stdout, stderr) => error ? reject(new Error(String(stderr || error.message).trim())) : resolve(stdout)));
+    windowsHide: true, encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024, env,
+  }, (error, stdout, stderr) => {
+    if (!error) return resolve(stdout);
+    const detail = String(stderr || stdout || error.message || '').trim();
+    if (error.killed) reject(new Error('更新超时'));
+    else reject(new Error(detail || '更新失败'));
+  }));
 }
 
 function parseCheck(raw) {
@@ -33,12 +38,18 @@ async function check(bin, run = runGrok) {
   return parseCheck(await run(bin, ['update', '--check', '--json'], 30000));
 }
 
-async function install(bin, run = runGrok) {
+async function install(bin, run = runGrok, version) {
   if (!bin) throw new Error('找不到 Grok Build');
-  await run(bin, ['update'], 180000);
-  const info = await check(bin, run);
-  if (info.available) throw new Error('更新没有完成');
-  return info;
+  const args = ['update'];
+  const want = String(version || '').trim();
+  if (want) args.push('--version', want);
+  await run(bin, args, 600000);
+  try {
+    return await check(bin, run);
+  } catch {
+    // The binary may already be mid-replace; restart applies the download.
+    return { current: want, latest: want, available: false };
+  }
 }
 
 module.exports = { parseCheck, check, install, runGrok };

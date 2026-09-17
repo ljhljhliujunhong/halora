@@ -48,17 +48,23 @@ test('grok update check parses json, ignores log lines, and treats matching vers
   assert.equal(grokUpdate.parseCheck('{"currentVersion":"1.0.30","latestVersion":"1.0.30","updateAvailable":true,"error":null}').available, false);
   assert.throws(() => grokUpdate.parseCheck('{"error":"offline"}'), /offline/);
 });
-test('grok update install runs update then refuses if still behind', async () => {
+test('grok update install runs update then still prompts if the binary needs a restart', async () => {
   const calls = [];
   const run = async (_bin, args) => {
-    calls.push(args[0] === 'update' && args[1] === '--check' ? 'check' : 'update');
+    calls.push(args.slice());
     if (args.includes('--check')) return '{"currentVersion":"1.0.30","latestVersion":"1.0.30","updateAvailable":false,"error":null}';
     return 'updated';
   };
   assert.deepEqual(await grokUpdate.install('grok', run), { current: '1.0.30', latest: '1.0.30', available: false });
-  assert.deepEqual(calls, ['update', 'check']);
-  await assert.rejects(grokUpdate.install('grok', async (_bin, args) => args.includes('--check')
-    ? '{"currentVersion":"1.0.29","latestVersion":"1.0.30","updateAvailable":true,"error":null}' : 'updated'), /没有完成/);
+  assert.deepEqual(calls, [['update'], ['update', '--check', '--json']]);
+  const pending = [];
+  const stillBehind = async (_bin, args) => {
+    pending.push(args.slice());
+    if (args.includes('--check')) return '{"currentVersion":"1.0.30","latestVersion":"1.0.34","updateAvailable":true,"error":null}';
+    return 'updated';
+  };
+  assert.deepEqual(await grokUpdate.install('grok', stillBehind, '1.0.34'), { current: '1.0.30', latest: '1.0.34', available: true });
+  assert.deepEqual(pending[0], ['update', '--version', '1.0.34']);
   await assert.rejects(grokUpdate.check(null), /找不到/);
 });
 test('review stages and unstages Unicode paths, commits only staged changes, and handles binary files', async () => {

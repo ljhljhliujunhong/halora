@@ -17,6 +17,7 @@ const remoteLine = review => [review.branch, review.ahead ? `领先 ${review.ahe
 
 export function Workbench({ page, state, onState, onClose }) {
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [prefs, setPrefs] = useState(state.preferences || {});
@@ -39,12 +40,12 @@ export function Workbench({ page, state, onState, onClose }) {
   const request = useRef(0);
   const cwd = state.cwd;
   const projectRunning = (state.projects || []).find(p => p.cwd === cwd)?.sessions.some(s => (state.runningIds || []).includes(s.id));
-  const act = async fn => {
+  const act = async (fn, label = '') => {
     if (actionLock.current) return;
     actionLock.current = true;
-    setBusy(true); setError(''); setResult(null);
+    setBusy(true); setBusyLabel(label); setError(''); setResult(null);
     try { return await fn(); } catch (e) { setError(String(e.message || e).replace(/^Error invoking remote method '[^']+': Error: /, '')); }
-    finally { actionLock.current = false; setBusy(false); }
+    finally { actionLock.current = false; setBusy(false); setBusyLabel(''); }
   };
   const load = async () => {
     if (page === 'review' && cwd) { const next = await api.review(cwd); setReview(next); setSelected(''); setPatch(null); }
@@ -90,7 +91,7 @@ export function Workbench({ page, state, onState, onClose }) {
     </header>
     {error && <div className="wb-error" role="alert">{error}</div>}
     {result && <div className="wb-result">{result.path || result.backup || result.text}{(result.path || result.backup) && <button className="btn ghost" onClick={() => api.showInFolder(result.path || result.backup).catch(e => setError(e.message))}>在文件夹中显示</button>}{result.relaunch && <button type="button" className="btn primary" onClick={() => api.relaunchApp()}>重启星环</button>}</div>}
-    {busy && <div className="wb-progress" role="status">正在处理…</div>}
+    {busy && <div className="wb-progress" role="status">{busyLabel || '正在处理…'}</div>}
     {page === 'settings' && <form className="wb-settings" onSubmit={e => { e.preventDefault(); act(async () => { onState(await api.savePreferences(prefs)); setResult({text:'设置已保存'}); }); }}>
       <h2>对话</h2>
       <label>默认模型<select value={prefs.modelId || ''} onChange={e => field('modelId', e.target.value)}>{[...new Set([prefs.modelId, ...(state.models || []).map(m => m.id)])].filter(Boolean).map(id => <option key={id}>{id}</option>)}</select></label>
@@ -107,7 +108,7 @@ export function Workbench({ page, state, onState, onClose }) {
       <label>任务运行时确认退出<input type="checkbox" checked={prefs.confirmExit !== false} onChange={e => field('confirmExit', e.target.checked)} /></label>
       <label>发送前建立文件检查点<input type="checkbox" checked={prefs.checkpoints !== false} onChange={e => field('checkpoints', e.target.checked)} /></label>
       <h2>更新</h2>
-      <label>Grok Build<div className="wb-actions">{grokUpdate && <span>{grokUpdate.available ? `${grokUpdate.current} → ${grokUpdate.latest}` : `${grokUpdate.current} · 已是最新`}</span>}<button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setGrokUpdate(await api.grokCheckUpdate()))}>检查更新</button>{grokUpdate?.available && <button type="button" className="btn primary" disabled={busy} onClick={() => act(async () => { const info = await api.grokInstallUpdate(); if (!info) return; setGrokUpdate(info); if (!info.relaunched) setResult({ text: 'Grok Build 已更新', relaunch: true }); })}>更新</button>}</div></label>
+      <label>Grok Build<div className="wb-actions">{busyLabel ? <span>{busyLabel}</span> : grokUpdate && <span>{grokUpdate.pendingRestart ? `${grokUpdate.current || grokUpdate.latest} · 重启后生效` : grokUpdate.available ? `${grokUpdate.current} → ${grokUpdate.latest}` : `${grokUpdate.current} · 已是最新`}</span>}<button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setGrokUpdate(await api.grokCheckUpdate()), '正在检查更新…')}>检查更新</button>{grokUpdate?.available && !grokUpdate.pendingRestart && <button type="button" className="btn primary" disabled={busy} onClick={() => act(async () => { const info = await api.grokInstallUpdate(); if (info) setGrokUpdate(info); }, '正在更新 Grok Build…')}>更新</button>}{grokUpdate?.pendingRestart && <button type="button" className="btn primary" disabled={busy} onClick={() => api.relaunchApp()}>重启星环</button>}</div></label>
       <h2>存储与诊断</h2>
       <div className="wb-actions"><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setStorage(await api.storageInspect()))}>查看存储</button><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setResult(await api.exportDiagnostics()))}>导出诊断日志</button></div>
       {storage && <div>{storage.usage.map(row => <p key={row.name}>{({checkpoints:'检查点',inbox:'附件',backups:'恢复备份','rewind-backups':'回退备份',trash:'已删除对话',logs:'日志'})[row.name]} · {(row.bytes / 1048576).toFixed(1)} MB</p>)}<button type="button" className="btn ghost" disabled={busy || !storage.removable.length} onClick={() => act(async () => setStorage(await api.storageCleanup(storage.removable.map(row => row.path))))}>清理过期数据 · {storage.removable.length} 项</button></div>}

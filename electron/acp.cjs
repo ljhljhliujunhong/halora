@@ -70,6 +70,38 @@ class AcpClient extends EventEmitter {
     }
   }
 
+  // Windows cannot replace grok.exe while our ACP child still holds it.
+  // Kill, wait for the real exit, then force the process tree if it stalls.
+  stopAndWait(ms = 8000) {
+    return new Promise((resolve) => {
+      const proc = this.proc;
+      if (!proc) return resolve();
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      proc.once("exit", done);
+      proc.once("error", done);
+      const pid = proc.pid;
+      this.stop();
+      const timer = setTimeout(() => {
+        if (process.platform === "win32" && pid) {
+          try {
+            spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).once("exit", done);
+            return;
+          } catch {
+            // fall through to resolve
+          }
+        }
+        try { proc.kill("SIGKILL"); } catch {}
+        done();
+      }, ms);
+    });
+  }
+
   onLine(line) {
     const trimmed = line.trim();
     if (!trimmed) return;

@@ -156,7 +156,8 @@ function mainHarness(options = {}) {
     }
     start() { this.alive = true; this.started = true; }
     async initialize() { this.inited = true; return {}; }
-    stop() {}
+    stop() { this.alive = false; this.stopped = true; }
+    async stopAndWait() { this.stop(); }
   }
   const sandbox = {
     require(name) {
@@ -545,21 +546,37 @@ test("opening the app connects grok instead of showing disconnected", async () =
 
 test("settings can check grok updates, block install while running, and restart after install", async () => {
   let current = "1.0.29";
+  const dialogs = [];
   const update = {
     check: async () => ({ current, latest: "1.0.30", available: current !== "1.0.30" }),
-    install: async () => { current = "1.0.30"; return { current, latest: "1.0.30", available: false }; },
+    install: async (_bin, _run, version) => {
+      assert.equal(version, "1.0.30");
+      current = "1.0.30";
+      return { current, latest: "1.0.30", available: false };
+    },
+    runGrok: async () => "",
   };
-  const later = mainHarness({ update, dialog: { showMessageBox: async () => ({ response: 0 }) } });
+  const later = mainHarness({
+    update,
+    dialog: { showMessageBox: async (_win, opts) => { dialogs.push(opts); return { response: 0 }; } },
+  });
   later.state.grokBin = "grok";
   const checked = await later.handlers.get("grok-check-update")();
   assert.equal(checked.available, true);
   const gen = later.beginTurn("busy", later.state.cwd || root, { user: "hi" });
-  await assert.rejects(later.handlers.get("grok-install-update")(), /停止/);
+  const skipped = await later.handlers.get("grok-install-update")();
+  assert.equal(skipped, null);
+  assert.equal(dialogs.at(-1).buttons.join(","), "取消,继续");
   later.endTurn("busy", gen);
   const installed = await later.handlers.get("grok-install-update")();
   assert.equal(installed.available, false);
+  assert.equal(installed.pendingRestart, true);
   assert.equal(installed.relaunched, false);
-  const restart = mainHarness({ update, dialog: { showMessageBox: async () => ({ response: 1 }) } });
+  assert.match(dialogs.at(-1).message, /1\.0\.30/);
+  const restart = mainHarness({
+    update,
+    dialog: { showMessageBox: async (_win, opts) => { dialogs.push(opts); return { response: 1 }; } },
+  });
   restart.state.grokBin = "grok";
   current = "1.0.29";
   const done = await restart.handlers.get("grok-install-update")();
