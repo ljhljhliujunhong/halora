@@ -950,6 +950,7 @@ function readRecordedDurations(dir) {
     rows.push({
       durationMs: Math.round(durationMs),
       startedAt: Number(row.startedAt) || 0,
+      turnId: row.turnId || '',
       endedAt: Number(row.endedAt) || 0,
       user: previewKey(row.user),
     });
@@ -963,6 +964,7 @@ function applyDuration(message, rec) {
   if (!Number.isFinite(ms) || ms < 0) return;
   message.durationMs = Math.round(ms);
   if (rec.startedAt) message.startedAt = rec.startedAt;
+  if (rec.turnId) message.turnId = rec.turnId;
   if (rec.endedAt) message.endedAt = rec.endedAt;
 }
 
@@ -1033,6 +1035,7 @@ function recordTurnDuration(cwd, sessionId, turn) {
   const ms = Number(turn?.durationMs);
   if (!Number.isFinite(ms) || ms < 0) return false;
   const row = {
+    turnId: turn.turnId || '',
     startedAt: Number(turn.startedAt) || 0,
     endedAt: Number(turn.endedAt) || Date.now(),
     durationMs: Math.round(ms),

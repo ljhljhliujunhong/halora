@@ -1,5 +1,5 @@
 const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
-const allowed = new Set(['review', 'archives', 'sessions', 'maintenance']);
+const allowed = new Set(['review', 'turn-changes', 'archives', 'sessions', 'maintenance']);
 function job(service, method, args) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(__filename, { workerData: { service, method, args } });

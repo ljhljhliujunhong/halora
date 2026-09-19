@@ -37,6 +37,7 @@ const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions }
 
 const acp = new AcpClient();
 const live = new Map();
+const changeCaptures = new Map();
 let loadingId = null;
 
 const state = {
@@ -198,6 +199,7 @@ function runningIds() {
     if (slot.running) ids.push(id);
   }
   for (const drain of acp.draining?.values() || []) if (!ids.includes(drain.sessionId)) ids.push(drain.sessionId);
+  for (const id of changeCaptures.keys()) if (!ids.includes(id)) ids.push(id);
   return ids;
 }
 
@@ -256,6 +258,7 @@ function stampTurn(id) {
   slot.turnUser = "";
   if (!slot.gotUpdate) return;
   recordTurnDuration(slot.cwd, id, {
+    turnId: slot.turnId,
     startedAt,
     endedAt,
     durationMs: Math.max(0, endedAt - startedAt),
@@ -1514,11 +1517,26 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
   setTimeout(applyAuto, 900);
   refreshSessions();
   watchSessions();
+  // A cancelled prompt may still be draining or recording its final file state.
+  if (live.get(sessionId)?.running) throw new Error('这次对话正在运行');
+  await changeCaptures.get(sessionId)?.done;
+  await Promise.all([...changeCaptures.values()].filter(c => c.finishing && samePath(c.cwd, cwd)).map(c => c.done));
   const gen = beginTurn(sessionId, cwd, { user: rawText, itemId: payload?.itemId });
+  let finishCapture;
+  const capture = { cwd, turn: { ...turnInfo(sessionId) }, before: null, warning: '', prompted: false,
+    done: new Promise(resolve => { finishCapture = resolve; }) };
+  for (const other of changeCaptures.values()) if (samePath(other.cwd, cwd)) {
+    other.warning = capture.warning = '同项目有并行任务，无法单独记录本轮修改。';
+  }
+  changeCaptures.set(sessionId, capture);
   send("state", snapshot());
   try {
     await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === sessionId).map(d => d.done));
     if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
+    if (!capture.warning) {
+      try { capture.before = await job('turn-changes', 'capture', [cwd]); }
+      catch (error) { capture.warning = `无法记录本轮文件修改：${error.message}`; }
+    }
     if (preferences(loadSettings()).checkpoints && !rawText.trim().startsWith('/')) {
       try {
         if ([...live.entries()].some(([id, slot]) => id !== sessionId && slot.running && samePath(slot.cwd, cwd))) throw new Error('同项目另一个任务正在修改文件');
@@ -1536,6 +1554,7 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
     }
     if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
     try {
+      capture.prompted = true;
       const result = await acp.prompt(sessionId, text, images, fileList);
       return { ok: true, result };
     } catch (err) {
@@ -1552,12 +1571,32 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
     if (live.get(sessionId)?.gen === gen) updateRecovery(sessionId, { status: 'interrupted' });
     throw error;
   } finally {
+    capture.finishing = true;
+    try {
+      await Promise.all([...(acp.draining?.values() || [])].filter(d => d.sessionId === sessionId).map(d => d.done));
+      if (capture.prompted) {
+        let changes;
+        try {
+          changes = await job('turn-changes', 'finish', [app.getPath('userData'), cwd, capture.turn, capture.before, capture.warning]);
+        } catch (error) {
+          changes = await job('turn-changes', 'finish', [app.getPath('userData'), cwd, capture.turn, null, `无法汇总本轮文件修改：${error.message}`]);
+        }
+        if (changes) send('turn-changes', changes);
+      }
+    } catch (error) {
+      diagnostics.log(app.getPath('userData'), 'turn-changes', error);
+      send('turn-changes', { ...capture.turn, cwd, id: capture.turn.turnId, files: [], warning: `修改记录保存失败：${error.message}` });
+    } finally {
+      changeCaptures.delete(sessionId);
+      finishCapture();
+    }
     if (endTurn(sessionId, gen)) {
       refreshSessions();
       if (sessionId === state.sessionId) refreshContext();
       refreshQuota(true);
       send("state", snapshot());
     }
+    else send('state', snapshot());
   }
 });
 
@@ -1822,6 +1861,17 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
 });
 ipcMain.handle('review', (_event, cwd) => reviewService.review(cwd || state.cwd));
 ipcMain.handle('review-diff', (_event, { cwd, file }) => reviewService.diff(cwd || state.cwd, file));
+ipcMain.handle('turn-changes', (_event, { cwd, sessionId }) => job('turn-changes', 'list', [app.getPath('userData'), cwd, sessionId]));
+ipcMain.handle('turn-change-diff', (_event, { cwd, id, file }) => job('turn-changes', 'diff', [app.getPath('userData'), cwd, id, file]));
+ipcMain.handle('undo-turn-changes', (_event, { cwd, id }) => lockedProject(cwd, async () => {
+  const record = await job('turn-changes', 'load', [app.getPath('userData'), cwd, id]);
+  if (record.undone || !record.files.length || record.warning) throw new Error('这次修改无法撤销');
+  const answer = await dialog.showMessageBox(win, { type: 'warning', title: '撤销本轮修改', message: `撤销这轮对 ${record.files.length} 个文件的修改？`, detail: '这些文件将恢复到本轮开始前；如果文件后来又被修改，撤销会停止。', buttons: ['取消', '撤销修改'], defaultId: 0, cancelId: 0 });
+  if (answer.response !== 1) return { canceled: true };
+  const next = await job('turn-changes', 'undo', [app.getPath('userData'), cwd, id]);
+  send('turn-changes', next);
+  return next;
+}));
 ipcMain.handle('review-stage', (_event, { cwd, files, unstage, all }) => lockedProject(cwd || state.cwd, () => reviewService.stage(cwd || state.cwd, all ? true : files, unstage)));
 ipcMain.handle('review-commit', (_event, { cwd, message }) => lockedProject(cwd || state.cwd, () => reviewService.commit(cwd || state.cwd, message)));
 ipcMain.handle('review-sync', (_event, { cwd } = {}) => lockedProject(cwd || state.cwd, async () => {

@@ -14,3 +14,25 @@ export function diffRows(text) {
     return row;
   });
 }
+
+export function diffSections(text) {
+  const sections = [];
+  let lastOld = null, lastNext = null;
+  for (const row of diffRows(text)) {
+    if (row.kind === 'meta') continue;
+    if (row.kind === 'hunk') {
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row.text);
+      if (!hunk) continue;
+      const oldStart = Number(hunk[1]), nextStart = Number(hunk[2]);
+      if (oldStart !== 0) {
+        const count = Math.max(0, oldStart - (lastOld == null ? 1 : lastOld), nextStart - (lastNext == null ? 1 : lastNext));
+        if (count > 0) sections.push({ kind: 'unmodified', count, old: '', next: '', text: `${count} 行未修改` });
+      }
+      continue;
+    }
+    sections.push(row);
+    if (row.old !== '') lastOld = Number(row.old) + 1;
+    if (row.next !== '') lastNext = Number(row.next) + 1;
+  }
+  return sections;
+}

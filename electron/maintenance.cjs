@@ -10,7 +10,7 @@ function files(root) {
   });
 }
 function inspect(dataRoot, grokRoot) {
-  const categories = ['checkpoints', 'inbox', 'rewind-backups', 'backups', 'trash', 'logs'];
+  const categories = ['checkpoints', 'turn-changes', 'inbox', 'rewind-backups', 'backups', 'trash', 'logs'];
   const usage = categories.map(name => ({ name, bytes: files(path.join(dataRoot, name)).reduce((n, f) => n + fs.statSync(f).size, 0) }));
   const references = new Set();
   const candidates = files(path.join(dataRoot, 'inbox'));

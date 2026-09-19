@@ -17,6 +17,7 @@ import {
 import { looksLikeFile, extractFileHint } from "./resource-hint.mjs";
 import brandIcon from "./brand.png";
 import { Workbench } from './Workbench.jsx';
+import { ChangeReviewProvider, ChangeReviewShell, TurnChangesCard, useTurnChanges } from './TurnChanges.jsx';
 
 const api = window.workshop;
 function storedComposer() {
@@ -1259,6 +1260,18 @@ export function App() {
   runningRef.current = new Set(appState.runningIds || []);
   if (appState.running && appState.sessionId) runningRef.current.add(appState.sessionId);
   const messages = threads[appState.sessionId] || [];
+  const turnChanges = useTurnChanges(appState.cwd, appState.sessionId);
+  const changeCards = new Map();
+  const unattachedChanges = [];
+  for (const record of turnChanges) {
+    const message = messages.findLast(item => item.role === 'assistant' && (
+      (record.turnId && item.turnId === record.turnId) || (record.startedAt && item.startedAt === record.startedAt)
+    ));
+    if (message) changeCards.set(message.id, record);
+    else unattachedChanges.push(record);
+  }
+  const changeProjectRunning = appState.running || (appState.projects || []).some(project =>
+    project.cwd?.toLowerCase() === appState.cwd?.toLowerCase() && (project.sessions || []).some(session => (appState.runningIds || []).includes(session.id)));
   const compactPhase = compactPhases[appState.sessionId] || "";
 
   useEffect(() => {
@@ -2365,7 +2378,7 @@ export function App() {
     event.preventDefault();
     event.stopPropagation();
     const width = payload?.kind === "file" ? 176 : 168;
-    const height = payload?.kind === "file" ? 120 : 132;
+    const height = payload?.kind === "project" ? 168 : payload?.kind === "file" ? 120 : 132;
     const x = Math.min(event.clientX, window.innerWidth - width - 8);
     const y = Math.min(event.clientY, window.innerHeight - height - 8);
     setMenu({ ...payload, x: Math.max(8, x), y: Math.max(8, y) });
@@ -2439,6 +2452,10 @@ export function App() {
     const current = menu;
     setMenu(null);
     try {
+      if (action === "open-project-folder") {
+        await api.openPath({ hint: ".", cwd: current.cwd });
+        return;
+      }
       if (action === "show-in-folder") {
         await api.showInFolder({ hint: current?.hint, cwd: appState.cwd });
         return;
@@ -2691,6 +2708,7 @@ export function App() {
 
   return (
     <PreviewContext.Provider value={setPreview}>
+    <ChangeReviewProvider cwd={appState.cwd} sessionId={appState.sessionId} parked={paneParked}>
     <div className={`app ${collapsed ? "collapsed" : ""}`} data-theme={prefs.theme === 'system' ? (systemDark ? 'dark' : 'light') : prefs.theme || 'light'} style={{ '--chat-font': `${prefs.fontSize || 14}px` }}>
       <aside className={`side ${collapsed ? "collapsed" : ""}`}>
         <div className="side-top">
@@ -3034,6 +3052,7 @@ export function App() {
             )}
           </section>
         ) : null}
+        <ChangeReviewShell parked={paneParked}>
         <div className={paneParked ? "chat-pane is-parked" : "chat-pane"} aria-hidden={paneParked || undefined}>
         <header className="top">
           <div className="crumb">{appState.cwd || "选择一个项目"}</div>
@@ -3147,9 +3166,12 @@ export function App() {
                       </div>
                     ) : null}
                     <MarkdownView text={message.text} />
+                    {changeCards.has(message.id) && <TurnChangesCard record={changeCards.get(message.id)} projectRunning={changeProjectRunning} />}
                   </article>
                 )
               )}
+
+              {unattachedChanges.map(record => <TurnChangesCard key={record.id} record={record} projectRunning={changeProjectRunning} />)}
 
               {compactPhase === "start" ? (
                 <div className="pulse">正在压缩</div>
@@ -3461,6 +3483,7 @@ export function App() {
           </>
         )}
         </div>
+        </ChangeReviewShell>
       </main>
 
       {menu ? (
@@ -3477,6 +3500,9 @@ export function App() {
               </button>
               <button type="button" onMouseDown={() => runMenu("edit-project")}>
                 编辑
+              </button>
+              <button type="button" onClick={() => runMenu("open-project-folder")}>
+                在文件夹中显示
               </button>
               <button type="button" className="danger" onMouseDown={() => runMenu("delete-project")}>
                 删除
@@ -3603,6 +3629,7 @@ export function App() {
         </div>
       ) : null}
     </div>
+    </ChangeReviewProvider>
     </PreviewContext.Provider>
   );
 }

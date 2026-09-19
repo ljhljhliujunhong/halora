@@ -23,6 +23,7 @@
 .diff-number{color:var(--muted);padding:0 10px;text-align:right;border-right:1px solid var(--line);user-select:none}
 .diff-text{padding:0 14px;white-space:pre}
 .diff-add{background:#e2f4e9;color:#216746}.diff-remove{background:#ffe9e7;color:#a33e3e}.diff-hunk{background:#e7f0fb;color:#31588d}.diff-meta{color:var(--muted)}
+.diff-unmodified{background:var(--bg)}.diff-unmodified .diff-fold{grid-column:1/-1;padding:5px 14px;color:var(--muted);font-size:12px}
 .wb-files,.wb-patch{scrollbar-width:auto;scrollbar-color:auto}
 .wb-files::-webkit-scrollbar,.wb-patch::-webkit-scrollbar{width:12px;height:12px}
 .wb-files::-webkit-scrollbar-track,.wb-patch::-webkit-scrollbar-track,.wb-patch::-webkit-scrollbar-corner{background:var(--bg-3)}
@@ -35,7 +36,7 @@
 .permission-tabs{display:flex;flex-wrap:wrap;gap:6px}.recovery-bar{flex-shrink:0;font-size:12px;flex-wrap:wrap}.recovery-bar>span{flex:1;min-width:180px}.main>.workbench{flex:1;min-height:0;height:auto}.chip .chat-img{width:48px;height:48px;object-fit:cover}
 .app[data-theme=dark]{--surface:#182830;--bg:#101e26;--bg-2:#182830;--bg-3:#263c47;--user:#24444d;--text:#e1edf1;--muted:#9bb0bd;--line:#314650;background:#101e26;color:var(--text)}
 .app[data-theme=dark]{--accent-2:#60d6e2;--ring-track:#3b505e;--ring-progress:#4dd2e0;--scroll-thumb:#698390;color-scheme:dark}
-.app[data-theme=dark] .diff-add{background:#183e32;color:#9ce5b7}.app[data-theme=dark] .diff-remove{background:#472b31;color:#ffb0b0}.app[data-theme=dark] .diff-hunk{background:#253b54;color:#a9cffb}
+.app[data-theme=dark] .diff-add{background:#183e32;color:#9ce5b7}.app[data-theme=dark] .diff-remove{background:#472b31;color:#ffb0b0}.app[data-theme=dark] .diff-hunk{background:#253b54;color:#a9cffb}.app[data-theme=dark] .diff-unmodified{background:#13212a}
 .app[data-theme=dark] :is(.composer-card,.menu,.suggest,.tool-card,.queue,.skill-card,.chip.file,.file-pill){background:#182830;color:#e1edf1;border-color:#314650}
 .app[data-theme=dark] :is(.side,.main,.topbar,.composer,.ctx-pop,.model-pop,.mode-pop,.modal,.skills-page,.workbench,.wb-review){background:#182830;color:#e1edf1;border-color:#314650}
 .app[data-theme=dark] :is(input,textarea,select,.md pre,.tool pre,.skills-search,.composer-card textarea){background:#13212a;color:#e1edf1;border-color:#314650}

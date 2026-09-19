@@ -28,6 +28,7 @@ function createBackup(dataRoot, grokRoot, destination, password = '') {
   collect(path.join(grokRoot, 'skills'), 'skills', files, budget, new Set(['.git', 'node_modules']));
   collect(path.join(dataRoot, 'inbox'), 'app/inbox', files, budget);
   collect(path.join(dataRoot, 'checkpoints'), 'app/checkpoints', files, budget);
+  collect(path.join(dataRoot, 'turn-changes'), 'app/turn-changes', files, budget, new Set(['diff-temp']));
   collect(path.join(dataRoot, 'rewind-backups'), 'app/rewind-backups', files, budget);
   const raw = Buffer.from(JSON.stringify({ format: 'halora-backup', version: 1, at: new Date().toISOString(), sourceDataRoot: dataRoot, files }));
   if (raw.length > LIMIT * 1.5) throw new Error('备份体积过大');
@@ -59,7 +60,7 @@ function parseBackup(file, password = '') {
   const seen = new Set(); let size = 0;
   for (const row of bundle.files) {
     if (typeof row.path !== 'string' || typeof row.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(row.data)) throw new Error('备份内容无效');
-    if (!/^(sessions\/|skills\/|app\/(settings\.json$|recovery\.json$|composer\.json$|inbox\/|checkpoints\/|rewind-backups\/))/.test(row.path)) throw new Error('备份包含非允许文件');
+    if (!/^(sessions\/|skills\/|app\/(settings\.json$|recovery\.json$|composer\.json$|inbox\/|checkpoints\/|turn-changes\/|rewind-backups\/))/.test(row.path)) throw new Error('备份包含非允许文件');
     safePath(path.join(path.dirname(path.resolve(file)), 'validation'), row.path);
     const key = row.path.toLowerCase(); if (seen.has(key)) throw new Error('备份包含重复路径'); seen.add(key);
     size += Buffer.byteLength(row.data, 'base64'); if (size > LIMIT) throw new Error('备份内容过大');

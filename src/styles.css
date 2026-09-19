@@ -559,6 +559,8 @@ select {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
+  container-name: chat;
 }
 
 .chat-pane.is-parked {
@@ -881,7 +883,7 @@ select {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 28px 8vw 16px;
+  padding: 28px clamp(16px, 6cqi, 64px) 16px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -1317,10 +1319,11 @@ select {
 .composer-wrap {
   position: relative;
   flex-shrink: 0;
-  padding: 8px 7vw 20px;
+  padding: 8px clamp(16px, 5cqi, 56px) 20px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .composer-wrap.drag .composer-card {
@@ -1412,6 +1415,8 @@ select {
   border-radius: 18px;
   box-shadow: 0 10px 28px rgba(20, 40, 70, 0.06);
   padding: 10px 12px 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .composer-card:focus-within {
@@ -1434,7 +1439,9 @@ select {
 .composer-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
 }
 
 .composer-bar .ctx-wrap {
@@ -1613,6 +1620,8 @@ select {
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .mode-btn:hover,
@@ -1679,7 +1688,7 @@ select {
 }
 
 .toast {
-  margin: 0 7vw;
+  margin: 0 clamp(16px, 5cqi, 56px);
   background: #f8e4de;
   color: #8a3b30;
   border-radius: 10px;

@@ -470,6 +470,75 @@ test('cancel then steer emits separate turn clocks and rejects the old completio
   assert.deepEqual(recorded.map(r => r.user), ['first', 'steered']);
 });
 
+test('completed edits emit a card, survive reopening, and undo through IPC', async () => {
+  const f = fixture('change-cards', 'complete');
+  const h = mainHarness(); h.saveSettings({ checkpoints: false });
+  h.state.cwd = f.cwd; h.state.sessionId = f.id;
+  const file = path.join(f.cwd, 'sample.txt'); fs.writeFileSync(file, 'before\n');
+  h.acp.prompt = async id => {
+    fs.writeFileSync(file, 'after\n');
+    h.acp.emit('notification', 'session/update', { sessionId: id, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'done' } } });
+    fs.writeFileSync(path.join(f.dir, 'chat_history.jsonl'), [
+      { type: 'user', content: 'edit sample' }, { type: 'assistant', content: 'done' },
+    ].map(JSON.stringify).join('\n') + '\n');
+    return {};
+  };
+  await h.handlers.get('send-prompt')(null, { text: 'edit sample', sessionId: f.id, cwd: f.cwd });
+  const card = h.events.find(e => e.type === 'turn-changes').payload;
+  assert.equal(card.files[0].path, 'sample.txt'); assert.equal(card.added, 1); assert.equal(card.removed, 1);
+  assert.equal(readTranscript(f.cwd, f.id).find(m => m.role === 'assistant').turnId, card.turnId);
+  const reopened = mainHarness();
+  assert.equal((await reopened.handlers.get('turn-changes')(null, { cwd: f.cwd, sessionId: f.id }))[0].id, card.id);
+  const patch = await reopened.handlers.get('turn-change-diff')(null, { cwd: f.cwd, id: card.id, file: 'sample.txt' });
+  assert.match(patch.text, /-before\n\+after/);
+  await reopened.handlers.get('undo-turn-changes')(null, { cwd: f.cwd, id: card.id });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'before\n');
+  assert.equal(reopened.events.find(e => e.type === 'turn-changes').payload.undone, true);
+});
+
+test('cancelled turns keep partial edits and refuse undo until the agent has stopped', async () => {
+  const f = fixture('change-cancel', 'cancel');
+  const h = mainHarness(); h.saveSettings({ checkpoints: false });
+  h.state.cwd = f.cwd; h.state.sessionId = f.id;
+  let rejectPrompt, settle;
+  h.acp.draining = new Map();
+  h.acp.prompt = () => { fs.writeFileSync(path.join(f.cwd, 'partial.txt'), 'partial'); return new Promise((_, reject) => { rejectPrompt = reject; }); };
+  h.acp.cancel = id => {
+    const drain = { sessionId: id, done: new Promise(resolve => { settle = () => { h.acp.draining.clear(); resolve(); }; }) };
+    h.acp.draining.set(1, drain);
+    rejectPrompt(new Error('任务已取消'));
+  };
+  const pending = h.handlers.get('send-prompt')(null, { text: 'edit', sessionId: f.id, cwd: f.cwd });
+  const rejected = assert.rejects(pending, /任务已取消/);
+  await waitFor(() => rejectPrompt);
+  await h.handlers.get('cancel')(null, f.id);
+  assert.ok(h.snapshot().runningIds.includes(f.id));
+  await assert.rejects(h.handlers.get('undo-turn-changes')(null, { cwd: f.cwd, id: 'unused' }), /还有任务运行/);
+  fs.writeFileSync(path.join(f.cwd, 'partial.txt'), 'final partial'); settle(); await rejected;
+  const card = h.events.find(e => e.type === 'turn-changes').payload;
+  assert.equal(card.files[0].path, 'partial.txt'); assert.equal(h.snapshot().runningIds.includes(f.id), false);
+  await h.handlers.get('undo-turn-changes')(null, { cwd: f.cwd, id: card.id });
+  assert.equal(fs.existsSync(path.join(f.cwd, 'partial.txt')), false);
+});
+
+test('overlapping project turns cannot publish an unsafe combined undo', async () => {
+  const a = fixture('change-parallel', 'one'), b = fixture('change-parallel', 'two');
+  const h = mainHarness(); h.saveSettings({ checkpoints: false });
+  const waits = new Map(); h.acp.prompt = id => new Promise(resolve => waits.set(id, resolve));
+  const first = h.handlers.get('send-prompt')(null, { text: 'first', sessionId: a.id, cwd: a.cwd });
+  await waitFor(() => waits.has(a.id));
+  const second = h.handlers.get('send-prompt')(null, { text: 'second', sessionId: b.id, cwd: b.cwd });
+  await waitFor(() => waits.has(b.id));
+  fs.writeFileSync(path.join(a.cwd, 'mixed.txt'), 'combined');
+  waits.get(a.id)({}); waits.get(b.id)({}); await Promise.all([first, second]);
+  const cards = h.events.filter(e => e.type === 'turn-changes').map(e => e.payload);
+  assert.equal(cards.length, 2);
+  for (const card of cards) {
+    assert.match(card.warning, /并行任务/); assert.equal(card.files.length, 0);
+    await assert.rejects(h.handlers.get('undo-turn-changes')(null, { cwd: a.cwd, id: card.id }), /无法撤销/);
+  }
+});
+
 test("startup shows last saved quota before a live fetch", async () => {
   const h = mainHarness();
   h.saveSettings({

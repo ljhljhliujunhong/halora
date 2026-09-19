@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import './workbench.css';
-import { diffRows } from './diff.mjs';
+import { diffRows, diffSections } from './diff.mjs';
 const api = window.workshop;
 const labels = { review: '改动审查', checkpoints: '检查点', settings: '设置', archives: '导出与备份' };
 const when = at => at ? new Date(at).toLocaleString() : '未知';
 
-function DiffContent({ patch }) {
+export function DiffContent({ patch, compact }) {
   if (!patch) return <p>读取差异…</p>;
+  if (patch.binary) return <p>{patch.text}</p>;
   if (!patch.text) return <p>内容未改变，可能是文件模式或重命名。</p>;
-  return <pre className="diff-code">{diffRows(patch.text).map((row, index) => <span key={index} className={`diff-line diff-${row.kind}`}><span className="diff-number" aria-label="原行号">{row.old}</span><span className="diff-number" aria-label="新行号">{row.next}</span><span className="diff-text">{row.text || ' '}</span></span>)}</pre>;
+  const rows = compact ? diffSections(patch.text) : diffRows(patch.text);
+  return <pre className="diff-code">{rows.map((row, index) => row.kind === 'unmodified'
+    ? <span key={index} className="diff-line diff-unmodified"><span className="diff-fold">{row.text}</span></span>
+    : <span key={index} className={`diff-line diff-${row.kind}`}><span className="diff-number" aria-label="原行号">{row.old}</span><span className="diff-number" aria-label="新行号">{row.next}</span><span className="diff-text">{row.text || ' '}</span></span>)}</pre>;
 }
 
 const needsStage = f => f.untracked || f.status[1] !== ' ';
@@ -111,7 +115,7 @@ export function Workbench({ page, state, onState, onClose }) {
       <label>Grok Build<div className="wb-actions">{busyLabel ? <span>{busyLabel}</span> : grokUpdate && <span>{grokUpdate.pendingRestart ? `${grokUpdate.current || grokUpdate.latest} · 重启后生效` : grokUpdate.available ? `${grokUpdate.current} → ${grokUpdate.latest}` : `${grokUpdate.current} · 已是最新`}</span>}<button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setGrokUpdate(await api.grokCheckUpdate()), '正在检查更新…')}>检查更新</button>{grokUpdate?.available && !grokUpdate.pendingRestart && <button type="button" className="btn primary" disabled={busy} onClick={() => act(async () => { const info = await api.grokInstallUpdate(); if (info) setGrokUpdate(info); }, '正在更新 Grok Build…')}>更新</button>}{grokUpdate?.pendingRestart && <button type="button" className="btn primary" disabled={busy} onClick={() => api.relaunchApp()}>重启星环</button>}</div></label>
       <h2>存储与诊断</h2>
       <div className="wb-actions"><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setStorage(await api.storageInspect()))}>查看存储</button><button type="button" className="btn ghost" disabled={busy} onClick={() => act(async () => setResult(await api.exportDiagnostics()))}>导出诊断日志</button></div>
-      {storage && <div>{storage.usage.map(row => <p key={row.name}>{({checkpoints:'检查点',inbox:'附件',backups:'恢复备份','rewind-backups':'回退备份',trash:'已删除对话',logs:'日志'})[row.name]} · {(row.bytes / 1048576).toFixed(1)} MB</p>)}<button type="button" className="btn ghost" disabled={busy || !storage.removable.length} onClick={() => act(async () => setStorage(await api.storageCleanup(storage.removable.map(row => row.path))))}>清理过期数据 · {storage.removable.length} 项</button></div>}
+      {storage && <div>{storage.usage.map(row => <p key={row.name}>{({checkpoints:'检查点','turn-changes':'对话修改记录',inbox:'附件',backups:'恢复备份','rewind-backups':'回退备份',trash:'已删除对话',logs:'日志'})[row.name]} · {(row.bytes / 1048576).toFixed(1)} MB</p>)}<button type="button" className="btn ghost" disabled={busy || !storage.removable.length} onClick={() => act(async () => setStorage(await api.storageCleanup(storage.removable.map(row => row.path))))}>清理过期数据 · {storage.removable.length} 项</button></div>}
       <div className="wb-actions"><button className="btn primary" disabled={busy}>保存设置</button><span>Halora · 星环 {state.version}</span></div>
     </form>}
     {page === 'review' && (!cwd ? <p>先打开一个项目。</p> : review && <>
