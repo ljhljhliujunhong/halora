@@ -916,11 +916,21 @@ test("reasoning effort is parsed from ACP options and sent as set_config_option"
   assert.equal(clampEffort("minimal", live.options), "low");
   assert.equal(clampEffort("xhigh", live.options), "xhigh");
   assert.equal(configFromResult({ configOptions: [{ configId: "reasoning_effort", currentValue: "xhigh" }] }).current, "xhigh");
+  assert.equal(parseConfigOptions([{
+    configId: "reasoning_effort",
+    options: [{ value: "low" }, { value: "high" }, { value: "xhigh" }],
+  }]).current, "");
   assert.equal(effortFromSummary({ reasoning_effort: "xhigh" }).current, "xhigh");
   const f = fixture("effort", "chat");
   writeJson(path.join(f.dir, "summary.json"), { ...f.summary, reasoning_effort: "high" });
+  const boot = mainHarness();
+  boot.state.cwd = f.cwd;
+  boot.state.sessionId = f.id;
+  boot.saveSettings({ effort: "xhigh" });
+  const opened = await boot.handlers.get("get-state")();
+  assert.equal(opened.effort.current, "xhigh");
   const h = mainHarness();
-  h.saveSettings({ effort: "minimal" });
+  h.saveSettings({ effort: "" });
   h.state.cwd = f.cwd;
   h.state.sessionId = f.id;
   h.acp.setConfigOption = async (sessionId, configId, value) => {
@@ -941,6 +951,10 @@ test("reasoning effort is parsed from ACP options and sent as set_config_option"
   };
   await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
   assert.equal(h.snapshot().effort.current, "high");
+  h.saveSettings({ effort: "xhigh" });
+  const preferred = await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  assert.equal(preferred.effort.current, "xhigh");
+  assert.equal(h.acp.config.value?.value || h.acp.config.value, "xhigh");
   const snap = await h.handlers.get("set-effort")(null, "xhigh");
   assert.equal(h.acp.config.configId, "reasoning_effort");
   assert.equal(h.acp.config.value?.value || h.acp.config.value, "xhigh");

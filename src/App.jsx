@@ -2572,7 +2572,7 @@ export function App() {
     modelList.find((model) => model.id === appState.modelId) || modelList[0] || null;
   const effort = appState.effort;
   const effortOptions = effort?.options || [];
-  const effortCurrent = effortDraft || effort?.current || "";
+  const effortCurrent = showModel && effortDraft ? effortDraft : (effort?.current || "");
   const effortIndex = Math.max(0, effortOptions.findIndex((item) => item.id === effortCurrent));
   const effortLabel = effortOptions[effortIndex]?.label || "";
 

@@ -314,6 +314,7 @@ async function attachSession(id, cwd) {
   slot.grokPlan = planModeActive(slot.cwd, id);
   applyInit(loaded || {});
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
+  await applyPreferredEffort(id);
   return loaded;
 }
 
@@ -661,7 +662,11 @@ async function refreshQuota(force = false) {
 
 function applyConfig(result) {
   const parsed = configFromResult(result);
-  if (parsed) state.effort = parsed;
+  if (!parsed) return parsed;
+  const options = parsed.options.length ? parsed.options : defaultEffortOptions();
+  const preferred = clampEffort(loadSettings().effort, options);
+  const current = preferred || parsed.current || state.effort?.current || options.find((item) => item.id === "high")?.id || options[options.length - 1]?.id || "";
+  state.effort = { current, options };
   return parsed;
 }
 
@@ -708,17 +713,16 @@ function resolvedEffort(value) {
 }
 
 async function applyPreferredEffort(sessionId) {
-  const want = resolvedEffort(loadSettings().effort || state.effort?.current);
+  const want = resolvedEffort(loadSettings().effort);
   if (!want || !sessionId || !acp.alive) return;
-  if (want === state.effort?.current) return;
   try {
     const result = await acp.setConfigOption(sessionId, "reasoning_effort", want);
     applyConfig(result);
-    if (state.effort) state.effort = { ...state.effort, current: want };
-    else state.effort = { current: want, options: defaultEffortOptions() };
   } catch {
     // Model may not advertise reasoning effort.
   }
+  if (state.effort) state.effort = { ...state.effort, current: want };
+  else state.effort = { current: want, options: defaultEffortOptions() };
 }
 
 async function ensureAgent() {
@@ -1133,11 +1137,13 @@ ipcMain.handle("get-state", async () => {
   watchSessions();
   hydrateQuota();
   if (!state.sessionId && settings.lastSessionId && state.sessions.some(s => s.id === settings.lastSessionId)) state.sessionId = settings.lastSessionId;
-  if (state.sessionId) seedEffortFromDisk(state.cwd, state.sessionId);
+  const effortOptions = state.effort?.options || defaultEffortOptions();
+  const preferredEffort = clampEffort(settings.effort, effortOptions);
+  if (preferredEffort) state.effort = { current: preferredEffort, options: effortOptions };
+  else if (state.sessionId) seedEffortFromDisk(state.cwd, state.sessionId);
   if (!state.effort) {
-    const options = defaultEffortOptions();
-    const current = clampEffort(settings.effort, options);
-    if (current) state.effort = { current, options };
+    const current = clampEffort(settings.effort, effortOptions);
+    if (current) state.effort = { current, options: effortOptions };
   }
   if (state.sessionId) {
     refreshContext();
@@ -1211,6 +1217,7 @@ ipcMain.handle("load-chat", async (_event, payload) => {
         // still show the saved chat
       }
     }
+    await applyPreferredEffort(id);
     refreshSessions();
     refreshSkills();
     refreshContext();

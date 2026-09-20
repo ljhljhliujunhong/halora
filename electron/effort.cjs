@@ -92,7 +92,7 @@ function parseConfigOptions(list) {
   const options = parsed.length ? parsed : defaultEffortOptions();
   const current = normalizeEffort(currentSource(raw));
   return {
-    current: current && options.some((item) => item.id === current) ? current : options.find((item) => item.id === "high")?.id || options[options.length - 1]?.id || "",
+    current: current && options.some((item) => item.id === current) ? current : "",
     options,
   };
 }
