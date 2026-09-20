@@ -3,7 +3,9 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const root = path.join(__dirname, "..");
-const src = path.join(root, "public", "icon.jpg");
+const srcPng = path.join(root, "public", "icon.png");
+const srcJpg = path.join(root, "public", "icon.jpg");
+const src = fs.existsSync(srcPng) ? srcPng : srcJpg;
 const outDir = path.join(root, "build");
 const pngPath = path.join(outDir, "icon.png");
 const icoPath = path.join(outDir, "icon.ico");
@@ -11,7 +13,7 @@ const brandPath = path.join(root, "src", "brand.png");
 const sizes = [16, 24, 32, 48, 64, 128, 256];
 
 if (!fs.existsSync(src)) {
-  throw new Error(`missing ${src}`);
+  throw new Error(`missing ${srcPng}`);
 }
 
 fs.mkdirSync(outDir, { recursive: true });
@@ -25,14 +27,17 @@ $src = ${JSON.stringify(src)}
 $png = ${JSON.stringify(pngPath)}
 $brand = ${JSON.stringify(brandPath)}
 $work = ${JSON.stringify(workDir)}
+$launcherIco = ${JSON.stringify(path.join(outDir, "launcher.ico"))}
 $sizes = @(${sizes.join(",")})
+$fmt = [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+$transparent = [System.Drawing.Color]::FromArgb(0, 0, 0, 0)
 
 function CopyHigh($srcImg, $w, $h) {
-  $bmp = New-Object System.Drawing.Bitmap $w, $h
+  $bmp = New-Object System.Drawing.Bitmap $w, $h, $fmt
   $bmp.SetResolution(96, 96)
   $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.Clear([System.Drawing.Color]::Transparent)
-  $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+  $g.Clear($transparent)
+  $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
   $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
   $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
   $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
@@ -42,82 +47,239 @@ function CopyHigh($srcImg, $w, $h) {
   return $bmp
 }
 
-$img = [System.Drawing.Image]::FromFile($src)
-$w = $img.Width
-$h = $img.Height
-$bmpSrc = New-Object System.Drawing.Bitmap $img
-$img.Dispose()
-
-$corner = $bmpSrc.GetPixel(2, 2)
-function Far($c) {
-  $dr = [Math]::Abs([int]$c.R - [int]$corner.R)
-  $dg = [Math]::Abs([int]$c.G - [int]$corner.G)
-  $db = [Math]::Abs([int]$c.B - [int]$corner.B)
-  return ($dr + $dg + $db) -gt 36
+function IsGold($c) {
+  if ($c.A -lt 120) { return $false }
+  $r = [int]$c.R; $g = [int]$c.G; $b = [int]$c.B
+  return ($r -ge 200 -and $g -ge 140 -and $r -ge ($b + 40) -and $g -ge ($b + 20))
 }
 
-$minX = $w; $minY = $h; $maxX = 0; $maxY = 0
-$step = [Math]::Max(1, [int]($w / 280))
-for ($y = 0; $y -lt $h; $y += $step) {
-  for ($x = 0; $x -lt $w; $x += $step) {
-    if (Far $bmpSrc.GetPixel($x, $y)) {
-      if ($x -lt $minX) { $minX = $x }
-      if ($y -lt $minY) { $minY = $y }
-      if ($x -gt $maxX) { $maxX = $x }
-      if ($y -gt $maxY) { $maxY = $y }
+function CleanSpecks($bmp) {
+  $w = $bmp.Width
+  $h = $bmp.Height
+  $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+  $data = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadWrite, $fmt)
+  $bytes = New-Object byte[] ($data.Stride * $h)
+  [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+  for ($i = 3; $i -lt $bytes.Length; $i += 4) {
+    if ($bytes[$i] -lt 12) { $bytes[$i] = 0 }
+  }
+  [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $data.Scan0, $bytes.Length)
+  $bmp.UnlockBits($data)
+}
+
+function MatteCircle($bmp) {
+  $w = $bmp.Width
+  $h = $bmp.Height
+  $cx = ($w - 1) / 2.0
+  $cy = ($h - 1) / 2.0
+  $half = [Math]::Min($cx, $cy)
+  $rOpaque = $half * 0.99
+  $rClear = $half * 0.999
+  $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+  $data = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadWrite, $fmt)
+  $bytes = New-Object byte[] ($data.Stride * $h)
+  [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+  for ($y = 0; $y -lt $h; $y++) {
+    $row = $y * $data.Stride
+    $dy = $y - $cy
+    for ($x = 0; $x -lt $w; $x++) {
+      $i = $row + $x * 4
+      $dx = $x - $cx
+      $d = [Math]::Sqrt($dx * $dx + $dy * $dy)
+      $a = [int]$bytes[$i + 3]
+      if ($d -ge $rClear) { $a = 0 }
+      elseif ($d -gt $rOpaque) { $a = [int]($a * (($rClear - $d) / ($rClear - $rOpaque))) }
+      if ($a -lt 12) { $a = 0 }
+      $bytes[$i + 3] = [byte]$a
     }
   }
+  [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $data.Scan0, $bytes.Length)
+  $bmp.UnlockBits($data)
 }
 
-$minX = [Math]::Max(0, $minX - $step * 2)
-$minY = [Math]::Max(0, $minY - $step * 2)
-$maxX = [Math]::Min($w - 1, $maxX + $step * 2)
-$maxY = [Math]::Min($h - 1, $maxY + $step * 2)
-$boxW = $maxX - $minX
-$boxH = $maxY - $minY
-$use = $bmpSrc
-if ($boxW -gt 8 -and $boxH -gt 8 -and ($boxW -lt $w * 0.9 -or $boxH -lt $h * 0.9)) {
-  $pad = [int]([Math]::Max($boxW, $boxH) * 0.14)
-  $x = [Math]::Max(0, $minX - $pad)
-  $y = [Math]::Max(0, $minY - $pad)
-  $cw = [Math]::Min($w - $x, $boxW + $pad * 2)
-  $ch = [Math]::Min($h - $y, $boxH + $pad * 2)
-  $side = [Math]::Max($cw, $ch)
-  $cx = [Math]::Max(0, [Math]::Min($w - $side, $x - [int](($side - $cw) / 2)))
-  $cy = [Math]::Max(0, [Math]::Min($h - $side, $y - [int](($side - $ch) / 2)))
-  $side = [Math]::Min($side, [Math]::Min($w - $cx, $h - $cy))
-  $use = $bmpSrc.Clone((New-Object System.Drawing.Rectangle $cx, $cy, $side, $side), $bmpSrc.PixelFormat)
+function CropSquare($img, $gx, $gy, $half) {
+  $side = [Math]::Max(32, [int][Math]::Round(2 * $half))
+  $x0 = [int][Math]::Round($gx - $side / 2.0)
+  $y0 = [int][Math]::Round($gy - $side / 2.0)
+  $crop = New-Object System.Drawing.Bitmap $side, $side, $fmt
+  $crop.SetResolution(96, 96)
+  $cg = [System.Drawing.Graphics]::FromImage($crop)
+  $cg.Clear($transparent)
+  $cg.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+  $cg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+  $cg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $cg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+  $cg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  $cg.DrawImage($img, -$x0, -$y0)
+  $cg.Dispose()
+  return $crop
 }
 
-$fit = 0.78
-$content = [Math]::Max($use.Width, $use.Height)
-$canvasSide = [Math]::Max($content + 8, [int]($content / $fit))
-$canvas = New-Object System.Drawing.Bitmap $canvasSide, $canvasSide
-$cg = [System.Drawing.Graphics]::FromImage($canvas)
-$cg.Clear($corner)
-$cg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-$cg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-$cg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-$dx = [int](($canvasSide - $use.Width) / 2)
-$dy = [int](($canvasSide - $use.Height) / 2)
-$cg.DrawImage($use, $dx, $dy, $use.Width, $use.Height)
-$cg.Dispose()
-$master = CopyHigh $canvas 1024 1024
-$canvas.Dispose()
+$img = New-Object System.Drawing.Bitmap $src
+$w = $img.Width
+$h = $img.Height
+$cx = ($w - 1) / 2.0
+$cy = ($h - 1) / 2.0
+$maxR = [Math]::Min($cx, $cy)
+$c0 = $img.GetPixel(0, 0).A
+$c1 = $img.GetPixel(($w - 1), 0).A
+$c2 = $img.GetPixel(0, ($h - 1)).A
+$c3 = $img.GetPixel(($w - 1), ($h - 1)).A
+$cornerA = ($c0 + $c1 + $c2 + $c3) / 4.0
+
+if ($cornerA -lt 24) {
+  $sumX = 0.0; $sumY = 0.0; $n = 0
+  $step = 3
+  for ($y = 0; $y -lt $h; $y += $step) {
+    for ($x = 0; $x -lt $w; $x += $step) {
+      if ($img.GetPixel($x, $y).A -gt 40) { $sumX += $x; $sumY += $y; $n++ }
+    }
+  }
+  if ($n -lt 16) { throw "opaque mark not found" }
+  $gx = $sumX / $n
+  $gy = $sumY / $n
+  $outerR = 0.0
+  for ($deg = 0; $deg -lt 360; $deg += 3) {
+    $rad = $deg * [Math]::PI / 180.0
+    $dx = [Math]::Cos($rad)
+    $dy = [Math]::Sin($rad)
+    $last = 0.0
+    for ($r = [int]($maxR * 0.2); $r -le $maxR; $r++) {
+      $x = [int][Math]::Round($gx + $dx * $r)
+      $y = [int][Math]::Round($gy + $dy * $r)
+      if ($x -lt 0 -or $y -lt 0 -or $x -ge $w -or $y -ge $h) { break }
+      if ($img.GetPixel($x, $y).A -gt 32) { $last = $r }
+    }
+    if ($last -gt $outerR) { $outerR = $last }
+  }
+  $crop = CropSquare $img $gx $gy ($outerR * 1.02)
+} else {
+  $sumX = 0.0; $sumY = 0.0; $nGold = 0
+  $fromCenter = New-Object System.Collections.Generic.List[double]
+  for ($deg = 0; $deg -lt 360; $deg += 4) {
+    $rad = $deg * [Math]::PI / 180.0
+    $dx = [Math]::Cos($rad)
+    $dy = [Math]::Sin($rad)
+    $inner = -1.0
+    $outer = -1.0
+    for ($r = [int]($maxR * 0.62); $r -le $maxR; $r++) {
+      $x = [int][Math]::Round($cx + $dx * $r)
+      $y = [int][Math]::Round($cy + $dy * $r)
+      if ($x -lt 0 -or $y -lt 0 -or $x -ge $w -or $y -ge $h) { break }
+      if (IsGold ($img.GetPixel($x, $y))) {
+        if ($inner -lt 0) { $inner = $r }
+        $outer = $r
+      }
+    }
+    if ($outer -gt 0) {
+      $mid = ($inner + $outer) / 2.0
+      $sumX += $cx + $dx * $mid
+      $sumY += $cy + $dy * $mid
+      $nGold++
+      $fromCenter.Add($outer)
+    }
+  }
+  if ($nGold -lt 8) { throw "gold ring not found" }
+  $gx = $sumX / $nGold
+  $gy = $sumY / $nGold
+  $sorted = $fromCenter.ToArray()
+  [Array]::Sort($sorted)
+  $pick = [Math]::Max(0, [int][Math]::Floor($sorted.Length * 0.88) - 1)
+  $crop = CropSquare $img $gx $gy ($sorted[$pick] * 1.045)
+}
+
+$img.Dispose()
+$master = CopyHigh $crop 1024 1024
+$crop.Dispose()
+CleanSpecks $master
+MatteCircle $master
+
 $icon256 = CopyHigh $master 256 256
 $icon256.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
 $icon256.Save($brand, [System.Drawing.Imaging.ImageFormat]::Png)
 $icon256.Dispose()
 
 foreach ($s in $sizes) {
-  $frame = CopyHigh $master $s $s
+  if ($s -le 32) {
+    $hi = CopyHigh $master ($s * 4) ($s * 4)
+    $frame = CopyHigh $hi $s $s
+    $hi.Dispose()
+  } else {
+    $frame = CopyHigh $master $s $s
+  }
   $frame.Save((Join-Path $work "$s.png"), [System.Drawing.Imaging.ImageFormat]::Png)
   $frame.Dispose()
 }
 
+$dibs = New-Object System.Collections.Generic.List[object]
+foreach ($s in $sizes) {
+  $frame = New-Object System.Drawing.Bitmap (Join-Path $work "$s.png")
+  $w = $frame.Width
+  $h = $frame.Height
+  $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+  $data = $frame.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, $fmt)
+  $raw = New-Object byte[] ($data.Stride * $h)
+  [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $raw, 0, $raw.Length)
+  $stride = $data.Stride
+  $frame.UnlockBits($data)
+  $frame.Dispose()
+  $xor = New-Object byte[] ($w * $h * 4)
+  $rowMask = [int][Math]::Ceiling($w / 32.0) * 4
+  $and = New-Object byte[] ($rowMask * $h)
+  for ($y = 0; $y -lt $h; $y++) {
+    for ($x = 0; $x -lt $w; $x++) {
+      $si = $y * $stride + $x * 4
+      $di = (($h - 1 - $y) * $w + $x) * 4
+      $xor[$di] = $raw[$si]
+      $xor[$di + 1] = $raw[$si + 1]
+      $xor[$di + 2] = $raw[$si + 2]
+      $xor[$di + 3] = $raw[$si + 3]
+      if ($raw[$si + 3] -lt 128) {
+        $byteIndex = ($h - 1 - $y) * $rowMask + [int][Math]::Floor($x / 8)
+        $and[$byteIndex] = $and[$byteIndex] -bor [byte](1 -shl (7 - ($x % 8)))
+      }
+    }
+  }
+  $hdr = New-Object byte[] 40
+  [BitConverter]::GetBytes([int]40).CopyTo($hdr, 0)
+  [BitConverter]::GetBytes([int]$w).CopyTo($hdr, 4)
+  [BitConverter]::GetBytes([int]($h * 2)).CopyTo($hdr, 8)
+  [BitConverter]::GetBytes([int16]1).CopyTo($hdr, 12)
+  [BitConverter]::GetBytes([int16]32).CopyTo($hdr, 14)
+  [BitConverter]::GetBytes([int]0).CopyTo($hdr, 16)
+  [BitConverter]::GetBytes([int]$xor.Length).CopyTo($hdr, 20)
+  $blob = New-Object byte[] ($hdr.Length + $xor.Length + $and.Length)
+  [Array]::Copy($hdr, 0, $blob, 0, $hdr.Length)
+  [Array]::Copy($xor, 0, $blob, $hdr.Length, $xor.Length)
+  [Array]::Copy($and, 0, $blob, $hdr.Length + $xor.Length, $and.Length)
+  $dibs.Add(@{ w = $w; h = $h; data = $blob })
+}
+
+$count = $dibs.Count
+$ms = New-Object System.IO.MemoryStream
+$bw = New-Object System.IO.BinaryWriter $ms
+$bw.Write([uint16]0)
+$bw.Write([uint16]1)
+$bw.Write([uint16]$count)
+$offset = 6 + 16 * $count
+foreach ($dib in $dibs) {
+  $bw.Write([byte]$(if ($dib.w -ge 256) { 0 } else { $dib.w }))
+  $bw.Write([byte]$(if ($dib.h -ge 256) { 0 } else { $dib.h }))
+  $bw.Write([byte]0)
+  $bw.Write([byte]0)
+  $bw.Write([uint16]1)
+  $bw.Write([uint16]32)
+  $bw.Write([uint32]$dib.data.Length)
+  $bw.Write([uint32]$offset)
+  $offset += $dib.data.Length
+}
+foreach ($dib in $dibs) { $bw.Write($dib.data) }
+$bw.Flush()
+[IO.File]::WriteAllBytes($launcherIco, $ms.ToArray())
+$bw.Dispose()
+$ms.Dispose()
+
 $master.Dispose()
-if ($use -ne $bmpSrc) { $use.Dispose() }
-$bmpSrc.Dispose()
 `;
 
 const result = spawnSync("powershell", ["-NoProfile", "-Command", ps], {
@@ -159,6 +321,9 @@ const entries = sizes.map((size) => ({
   png: fs.readFileSync(path.join(workDir, `${size}.png`)),
 }));
 writeIco(entries, icoPath);
+const launcherIco = path.join(outDir, "launcher.ico");
+if (!fs.existsSync(launcherIco)) throw new Error("missing launcher.ico");
 console.log("wrote", pngPath);
 console.log("wrote", icoPath);
+console.log("wrote", launcherIco);
 console.log("wrote", brandPath);

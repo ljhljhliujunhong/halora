@@ -780,6 +780,8 @@ function appIcon() {
   if (app.isPackaged && fs.existsSync(packaged)) return packaged;
   const localIco = path.join(__dirname, "../build/icon.ico");
   if (fs.existsSync(localIco)) return localIco;
+  const localPng = path.join(__dirname, "../public/icon.png");
+  if (fs.existsSync(localPng)) return localPng;
   return path.join(__dirname, "../public/icon.jpg");
 }
 

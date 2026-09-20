@@ -76,7 +76,7 @@ select {
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
-  height: 44px;
+  height: 56px;
   flex-shrink: 0;
 }
 
@@ -247,12 +247,17 @@ select {
   gap: 10px;
   align-items: center;
   min-width: 0;
-  height: 44px;
+  height: 56px;
   width: 100%;
 }
 
 .side.collapsed .brand {
   justify-content: flex-start;
+  height: 44px;
+}
+
+.side.collapsed .side-top {
+  height: 44px;
 }
 
 .brand .side-wide { min-width: 0; overflow: hidden; }
@@ -260,12 +265,18 @@ select {
 .brand span { display: block; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .brand-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  object-fit: cover;
+  width: 52px;
+  height: 52px;
+  border-radius: 0;
+  object-fit: contain;
+  background: transparent;
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(46, 184, 201, 0.2);
+}
+
+.side.collapsed .brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 0;
 }
 
 .brand strong {
