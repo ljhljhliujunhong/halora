@@ -106,19 +106,17 @@ function optionLabel(option) {
 }
 
 function permissionLaunchLabel(items) {
-  const count = items.length;
   const first = items[0];
-  if (count === 1 && first?.kind === "plan") return "计划等你定";
-  if (count === 1 && first?.kind === "question") return "Grok 有问题问你";
-  if (items.every((item) => item.kind === "plan")) return `计划等你定 · ${count}`;
-  return `待处理 · ${count}`;
+  if (items.every((item) => item.kind === "plan")) return "计划等你定";
+  if (items.length === 1 && first?.kind === "question") return "有问题";
+  return "待处理";
 }
 
 function optionTone(option) {
   const kind = String(option.kind || option.name || "").toLowerCase();
-  if (kind.includes("reject") || kind.includes("deny")) return "ghost";
-  if (kind.includes("always")) return "gold";
-  return "primary";
+  if (kind.includes("reject") || kind.includes("deny") || kind.includes("abandon")) return "danger";
+  if (kind.includes("allow") || kind.includes("approve")) return "primary";
+  return "ghost";
 }
 
 function toolStatus(status) {
@@ -1067,10 +1065,10 @@ function PlanApproval({ item, onAnswer, onError }) {
             <button type="button" className="btn primary" disabled={sending} onClick={() => answer("approved")}>
               {hasPlan ? "按计划开始" : "退出规划"}
             </button>
-            <button type="button" className="btn gold" disabled={sending} onClick={() => setRevising(true)}>
+            <button type="button" className="btn ghost" disabled={sending} onClick={() => setRevising(true)}>
               要求修改
             </button>
-            <button type="button" className="btn ghost" disabled={sending} onClick={() => answer("abandoned")}>
+            <button type="button" className="btn danger" disabled={sending} onClick={() => answer("abandoned")}>
               放弃计划
             </button>
           </>
@@ -3467,16 +3465,19 @@ export function App() {
       ) : null}
 
       {permission && (
-        <button type="button" className={`permission-launch btn ${permission.kind === "plan" ? "gold" : "primary"}`} onClick={() => setPermissionsOpen(p => !p)}>
+        <button type="button" className="permission-launch btn primary" onClick={() => setPermissionsOpen((open) => !open)}>
           {permissionLaunchLabel(permissionItems)}
+          <span className="permission-count">{permissionItems.length}</span>
         </button>
       )}
       {permission && permissionsOpen ? (
         <aside className={`permission-dock ${permission.kind || "permission"}`} aria-label="等你处理">
           <div className="modal">
-            <button type="button" className="btn ghost" onClick={() => setPermissionsOpen(false)}>收起</button>
-            <div className="permission-tabs">{permissionItems.map(item => <button key={item.requestId} className={`btn ${item === permission ? 'primary' : 'ghost'}`} onClick={() => { setSelectedPermission(item.requestId); setPermissionError(''); }}>{item.sessionTitle || item.sessionId?.slice(0, 8) || '当前对话'}</button>)}</div>
-            <p className="permission-origin">{permission.cwd} · {permissionItems.length} 项待处理</p>
+            <div className="permission-head">
+              <div className="permission-tabs">{permissionItems.map(item => <button key={item.requestId} type="button" className={`btn ghost${item === permission ? ' selected' : ''}`} onClick={() => { setSelectedPermission(item.requestId); setPermissionError(''); }}>{item.sessionTitle || item.sessionId?.slice(0, 8) || '当前对话'}</button>)}</div>
+              <button type="button" className="btn ghost permission-fold" onClick={() => setPermissionsOpen(false)}>收起</button>
+            </div>
+            <p className="permission-origin">{permission.cwd}</p>
             {permissionError && <p role="alert">{permissionError}</p>}
             {permission.kind === "plan" ? (
               <PlanApproval

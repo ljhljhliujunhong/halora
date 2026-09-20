@@ -40,11 +40,12 @@
 .wb-restore-files span{min-width:0;overflow-wrap:anywhere}
 .wb-record .wb-restore>p{margin:0 0 12px;font-size:13px;color:var(--muted)}
 .wb-restore .wb-actions{margin:0;align-items:center}
-.wb-restore .wb-actions .btn{height:36px;min-height:36px;padding:0 14px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;line-height:1;box-shadow:var(--glass-edge),var(--glass-bloom)}
+.wb-restore .wb-actions .btn{height:36px;min-height:36px;padding:0 14px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;line-height:1}
+.wb-restore .wb-actions .btn.ghost{box-shadow:var(--glass-edge),var(--glass-bloom)}
 .side-tools{padding:0;border:0;display:grid;grid-template-columns:1fr 1fr;gap:2px}.side-tools button{-webkit-appearance:none;appearance:none;display:flex;align-items:center;justify-content:flex-start;gap:7px;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:var(--text);cursor:pointer;font-size:12px;line-height:1.2;min-height:32px;white-space:nowrap}.side-tools button svg{display:block;flex:0 0 auto;color:var(--muted)}.side-tools button.active,.side-tools button:hover{background:var(--bg-3);color:var(--text)}.side-tools button.active svg,.side-tools button:hover svg{color:var(--accent-2)}.side.collapsed .side-tools{opacity:0;visibility:hidden;transform:translateX(-8px);transition:opacity 120ms ease,transform 180ms var(--panel-ease),visibility 0s 180ms}
-.recovery-bar{margin:12px 20px;padding:10px 14px;border:1px solid #e0c79c;background:#fff8ec;border-radius:10px;display:flex;justify-content:space-between;gap:12px;align-items:center}.recovery-bar small{display:block;color:#8f7350}.permission-list{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px}.permission-list button{border:1px solid #cbdce3;background:#fff;border-radius:8px;padding:7px;color:#294452}.permission-list button.active{background:#d6f0f5}.permission-origin{font-size:12px;color:#617d91;overflow-wrap:anywhere;margin:8px 0}
+.recovery-bar{margin:12px 20px;padding:10px 14px;border:1px solid #e0c79c;background:#fff8ec;border-radius:10px;display:flex;justify-content:space-between;gap:12px;align-items:center}.recovery-bar small{display:block;color:#8f7350}.permission-list{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px}.permission-list button{border:1px solid #cbdce3;background:#fff;border-radius:8px;padding:7px;color:#294452}.permission-list button.active{background:#d6f0f5}
 .app{--chat-font:14px}.app .md,.app .bubble.user{font-size:var(--chat-font)}
-.permission-tabs{display:flex;flex-wrap:wrap;gap:6px}.recovery-bar{flex-shrink:0;font-size:12px;flex-wrap:wrap}.recovery-bar>span{flex:1;min-width:180px}.main>.workbench{flex:1;min-height:0;height:auto}.chip .chat-img{width:48px;height:48px;object-fit:cover}
+.recovery-bar{flex-shrink:0;font-size:12px;flex-wrap:wrap}.recovery-bar>span{flex:1;min-width:180px}.main>.workbench{flex:1;min-height:0;height:auto}.chip .chat-img{width:48px;height:48px;object-fit:cover}
 .app[data-theme=dark] .diff-add{background:#1a3b32;color:#9ce5b7}.app[data-theme=dark] .diff-remove{background:#472b31;color:#ffb0b0}.app[data-theme=dark] .diff-hunk{background:#24344d;color:#a9cffb}.app[data-theme=dark] .diff-unmodified{background:rgba(255,255,255,.03)}
 .app[data-theme=dark] .wb-result{background:#1a3b32;color:#9ce5b7}
 .app[data-theme=dark] .wb-error{background:#472b31;color:#ffb0b0;border-color:#6a3a42}
@@ -69,7 +70,7 @@
 .glass-select-pop button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:9px 12px;border-radius:12px;cursor:pointer;font:inherit;font-size:13px;font-weight:650}
 .glass-select-pop button em{font-style:normal;color:var(--accent-2);min-width:1em}
 .app[data-theme] .workbench{background:transparent}
-.app[data-theme] .wb-head .btn.ghost{border-radius:999px;padding:8px 14px}
+.app[data-theme] .wb-head .btn.ghost{border-radius:999px;padding:0 14px}
 .app[data-theme] .wb-settings{max-width:820px;padding:8px}
 .app[data-theme] .wb-settings h2{margin:22px 6px 10px;font-size:15px;letter-spacing:.04em}
 .app[data-theme] .wb-settings label{margin:6px 0;padding:12px 14px;border:1px solid transparent;border-radius:16px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-bloom);transition:background 160ms ease,box-shadow 160ms ease}
