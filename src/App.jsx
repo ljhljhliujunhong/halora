@@ -462,7 +462,7 @@ function IconCheck() {
   );
 }
 
-const SKILL_HUES = ["#2eb8c9", "#3aa8d8", "#5b8def", "#6a7ee8", "#3db89a", "#4f9ec7"];
+const SKILL_HUES = ["#3B82F6", "#5B8DEF", "#6a7ee8", "#818CF8", "#60A5FA", "#4F7CFF"];
 
 function skillHue(name) {
   let hash = 0;
@@ -2662,31 +2662,19 @@ export function App() {
           </div>
         </div>
 
-        {collapsed ? (
-          <button
-            type="button"
-            className="side-new-chat"
-            onClick={() => newChat()}
-            disabled={!appState.cwd || busy}
-            title="新对话"
-            aria-label="新对话"
-          >
-            <IconPlus />
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="side-new"
-            onClick={openFolder}
-            disabled={busy}
-            title="新建项目"
-          >
-            <IconPlus />
-            <span>新建项目</span>
-          </button>
-        )}
+        <button
+          type="button"
+          className="side-new"
+          onClick={collapsed ? () => newChat() : openFolder}
+          disabled={busy || (collapsed && !appState.cwd)}
+          title={collapsed ? '新对话' : '新建项目'}
+          aria-label={collapsed ? '新对话' : '新建项目'}
+        >
+          <IconPlus />
+          <span className="side-wide">新建项目</span>
+        </button>
 
-        <div className="session-list side-wide" onContextMenu={(event) => event.preventDefault()}>
+        <div className="session-list side-wide" inert={collapsed} onContextMenu={(event) => event.preventDefault()}>
           {projects.map((item) => {
             const itemKey = projectKey(item.cwd);
             const open = openProjects.has(itemKey);
@@ -2894,7 +2882,7 @@ export function App() {
           })}
         </div>
         <div className="side-dock">
-        <nav className="side-tools" aria-label="工作区工具">{WORKBENCH_TOOLS.map(({ key, label, Icon }) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => openWorkbench(key)}><Icon /><span>{label}</span></button>)}</nav>
+        <nav className="side-tools" inert={collapsed} aria-label="工作区工具">{WORKBENCH_TOOLS.map(({ key, label, Icon }) => <button key={key} className={workbenchPage === key ? 'active' : ''} onClick={() => openWorkbench(key)}><Icon /><span>{label}</span></button>)}</nav>
         <div className="side-foot">
           <button
             type="button"
@@ -2916,6 +2904,7 @@ export function App() {
             onClick={toggleSidebar}
             title={collapsed ? "展开" : "收起"}
             aria-label={collapsed ? "展开" : "收起"}
+            aria-expanded={!collapsed}
           >
             <IconChevron left={!collapsed} />
           </button>
@@ -2931,9 +2920,14 @@ export function App() {
           <section className="skills-page">
             <div className="skills-head">
               <h1>技能</h1>
-              <button type="button" className="btn primary" onClick={importSkills}>
-                导入
-              </button>
+              <div className="skills-actions">
+                <button type="button" className="btn ghost" onClick={importSkills}>
+                  导入
+                </button>
+                <button type="button" className="btn ghost" onClick={() => setShowSkills(false)}>
+                  返回对话
+                </button>
+              </div>
             </div>
             <input
               className="skills-search"
@@ -3026,6 +3020,7 @@ export function App() {
                   el.scrollHeight - el.scrollTop - el.clientHeight < 96;
               }}
             >
+              <div className="thread-content">
               {messages.length === 0 && !appState.running ? (
                 <div className="blank in-thread">
                   <h1>{project}</h1>
@@ -3121,6 +3116,7 @@ export function App() {
                   <LiveClock startedAt={liveStartedAt} />
                 </div>
               ) : null}
+              </div>
             </div>
 
             {error ? <div className="toast">{error}</div> : null}

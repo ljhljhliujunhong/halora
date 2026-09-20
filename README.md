@@ -10,18 +10,22 @@
 
 ## 怎么跑
 
+日常打开用项目根目录的 `星环.exe`（或 `打开星环.bat`），不要默认走 `npm start`。
+
+**改完界面、图标、主进程或任何会进应用的代码，必须立刻 `npm run pack`，把根目录 `星环.exe` 同步成最新版。** 只改源码不打包，双击 exe 仍是旧程序。应用若正在运行，打包脚本会让它退出后再替换并重启。
+
 ```bash
 npm install
-npm start
-```
-
-打包成 Windows 应用：
-
-```bash
 npm run pack
 ```
 
-完成后，项目目录里的 `星环.exe` 就是最新版。双击它，或运行 `打开星环.bat`。
+本地热更新调试才用：
+
+```bash
+npm start
+```
+
+打包完成后，项目目录里的 `星环.exe` 就是最新版。
 
 构建唯一来源由 `package.json` 的 `build.directories.output` 指定，目前为 `E:/VsCodeProject/Agent缓存文件/halora-release`。安装时校验包版本、源码/界面内容以及全部文件的 SHA-256。根目录启动器固定启动 `runtime/app/Halora.exe`。
 

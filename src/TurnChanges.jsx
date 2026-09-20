@@ -51,6 +51,7 @@ export function ChangeReviewShell({ parked, children }) {
   const { review } = useChangeReview();
   const [shown, setShown] = useState(null);
   const [open, setOpen] = useState(false);
+  const stageRef = useRef(null);
   useEffect(() => {
     let frame = 0, timer = 0;
     if (review && !parked) {
@@ -59,12 +60,14 @@ export function ChangeReviewShell({ parked, children }) {
       return () => cancelAnimationFrame(frame);
     }
     setOpen(false);
-    timer = window.setTimeout(() => setShown(null), 320);
+    // Keep the content mounted for the full CSS exit, including interrupted motion.
+    const duration = parseFloat(getComputedStyle(stageRef.current).getPropertyValue('--panel-duration')) || 0;
+    timer = window.setTimeout(() => setShown(null), duration + 40);
     return () => clearTimeout(timer);
   }, [review, parked]);
-  return <div className={`main-stage${parked ? ' is-parked' : ''}${open ? ' is-reviewing' : ''}`}>
+  return <div ref={stageRef} className={`main-stage${parked ? ' is-parked' : ''}${open ? ' is-reviewing' : ''}`}>
     <div className="main-stage-chat">{children}</div>
-    {shown && !parked ? <ChangeReviewPane session={shown} /> : null}
+    {shown && !parked ? <ChangeReviewPane session={shown} visible={open} /> : null}
   </div>;
 }
 
@@ -73,7 +76,7 @@ function Counts({ added, removed }) {
   return <span className="change-counts"><span className="change-added">+{added}</span><span className="change-removed">-{removed}</span></span>;
 }
 
-function ChangeReviewPane({ session }) {
+function ChangeReviewPane({ session, visible }) {
   const { close, open } = useChangeReview();
   const { record, file } = session;
   const [patch, setPatch] = useState(null);
@@ -92,7 +95,7 @@ function ChangeReviewPane({ session }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [close]);
-  return <aside className="change-drawer" aria-label={`${file} 本轮改动对比`}>
+  return <aside className="change-drawer" inert={!visible} aria-hidden={!visible} aria-label={`${file} 本轮改动对比`}>
     <header className="change-drawer-head">
       <div className="change-drawer-title">
         <strong title={file}>{file}</strong>

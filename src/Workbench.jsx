@@ -1,6 +1,94 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import './workbench.css';
 import { diffRows, diffSections } from './diff.mjs';
+
+function GlassSelect({ value, onChange, options, ariaLabel }) {
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState(null);
+  const root = useRef(null);
+  const pop = useRef(null);
+  const current = options.find((item) => item.value === value) || options[0];
+  useLayoutEffect(() => {
+    if (!open) return;
+    const btn = root.current?.querySelector('.glass-select-btn');
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const width = Math.max(rect.width, 220);
+    let left = rect.left;
+    if (left + width > window.innerWidth - 12) left = window.innerWidth - width - 12;
+    if (left < 12) left = 12;
+    let top = rect.bottom + 8;
+    const estHeight = Math.min(options.length * 44 + 16, 280);
+    if (top + estHeight > window.innerHeight - 12) top = Math.max(12, rect.top - estHeight - 8);
+    setBox({ top, left, width });
+  }, [open, options.length]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event) => {
+      if (root.current?.contains(event.target) || pop.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onScroll = (event) => {
+      if (pop.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, [open]);
+  return (
+    <div className={`glass-select ${open ? 'open' : ''}`} ref={root}>
+      <button
+        type="button"
+        className="glass-select-btn"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((next) => !next)}
+      >
+        <span>{current?.label || value}</span>
+      </button>
+      {open && box
+        ? createPortal(
+            <div
+              ref={pop}
+              className="glass-select-pop"
+              data-theme={document.querySelector('.app')?.getAttribute('data-theme') || 'light'}
+              role="listbox"
+              style={{ top: box.top, left: box.left, width: box.width }}
+            >
+              {options.map((item) => (
+                <button
+                  type="button"
+                  key={String(item.value)}
+                  role="option"
+                  aria-selected={item.value === value}
+                  className={item.value === value ? 'active' : ''}
+                  onClick={() => {
+                    onChange(item.value);
+                    setOpen(false);
+                  }}
+                >
+                  <span>{item.label}</span>
+                  <em>{item.value === value ? '✓' : ''}</em>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
 const api = window.workshop;
 const labels = { review: '改动审查', checkpoints: '检查点', settings: '设置', archives: '导出与备份' };
 const when = at => at ? new Date(at).toLocaleString() : '未知';
@@ -42,6 +130,7 @@ export function Workbench({ page, state, onState, onClose }) {
   const [restorePassword, setRestorePassword] = useState('');
   const actionLock = useRef(false);
   const request = useRef(0);
+  const restoreBox = useRef(null);
   const cwd = state.cwd;
   const projectRunning = (state.projects || []).find(p => p.cwd === cwd)?.sessions.some(s => (state.runningIds || []).includes(s.id));
   const act = async (fn, label = '') => {
@@ -88,6 +177,10 @@ export function Workbench({ page, state, onState, onClose }) {
     api.reviewDiff({ cwd, file: selected }).then(value => { if (request.current === id) setPatch(value); })
       .catch(e => { if (request.current === id) setError(e.message); });
   }, [selected, cwd, review]);
+  useEffect(() => {
+    if (!restore) return;
+    restoreBox.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [restore]);
   const field = (key, value) => setPrefs(p => ({ ...p, [key]: value }));
   return <section className={page === 'review' ? 'workbench wb-fill' : 'workbench'}>
     <header className="wb-head"><div><small>{cwd?.split(/[\\/]/).pop() || 'Halora'}</small><h1>{labels[page]}</h1></div>
@@ -98,15 +191,15 @@ export function Workbench({ page, state, onState, onClose }) {
     {busy && <div className="wb-progress" role="status">{busyLabel || '正在处理…'}</div>}
     {page === 'settings' && <form className="wb-settings" onSubmit={e => { e.preventDefault(); act(async () => { onState(await api.savePreferences(prefs)); setResult({text:'设置已保存'}); }); }}>
       <h2>对话</h2>
-      <label>默认模型<select value={prefs.modelId || ''} onChange={e => field('modelId', e.target.value)}>{[...new Set([prefs.modelId, ...(state.models || []).map(m => m.id)])].filter(Boolean).map(id => <option key={id}>{id}</option>)}</select></label>
-      <label>默认思考强度<select value={prefs.effort === 'minimal' || prefs.effort === 'none' ? 'low' : (prefs.effort || '')} onChange={e => field('effort', e.target.value)}><option value="">跟随模型</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">最高</option></select></label>
-      <label>默认权限模式<select value={prefs.permissionMode || 'agent'} onChange={e => field('permissionMode', e.target.value)}><option value="agent">代理 · 执行前询问</option><option value="plan">规划</option><option value="yolo">自动允许工具操作</option></select></label>
+      <label>默认模型<GlassSelect ariaLabel="默认模型" value={prefs.modelId || ''} onChange={(value) => field('modelId', value)} options={[...new Set([prefs.modelId, ...(state.models || []).map(m => m.id)])].filter(Boolean).map(id => ({ value: id, label: id }))} /></label>
+      <label>默认思考强度<GlassSelect ariaLabel="默认思考强度" value={prefs.effort === 'minimal' || prefs.effort === 'none' ? 'low' : (prefs.effort || '')} onChange={(value) => field('effort', value)} options={[{ value: '', label: '跟随模型' }, { value: 'low', label: '低' }, { value: 'medium', label: '中' }, { value: 'high', label: '高' }, { value: 'xhigh', label: '最高' }]} /></label>
+      <label>默认权限模式<GlassSelect ariaLabel="默认权限模式" value={prefs.permissionMode || 'agent'} onChange={(value) => field('permissionMode', value)} options={[{ value: 'agent', label: '代理 · 执行前询问' }, { value: 'plan', label: '规划' }, { value: 'yolo', label: '自动允许工具操作' }]} /></label>
       <label>自动压缩阈值 <span><input type="number" min="50" max="95" value={prefs.autoCompact ?? 85} onChange={e => field('autoCompact', Number(e.target.value))} /> %</span></label>
-      <label>发送快捷键<select value={prefs.sendKey || 'enter'} onChange={e => field('sendKey', e.target.value)}><option value="enter">Enter</option><option value="ctrl-enter">Ctrl + Enter</option></select></label>
+      <label>发送快捷键<GlassSelect ariaLabel="发送快捷键" value={prefs.sendKey || 'enter'} onChange={(value) => field('sendKey', value)} options={[{ value: 'enter', label: 'Enter' }, { value: 'ctrl-enter', label: 'Ctrl + Enter' }]} /></label>
       <label>默认项目<div className="wb-actions"><input value={prefs.defaultCwd || ''} onChange={e => field('defaultCwd', e.target.value)} /><button type="button" className="btn ghost" onClick={() => act(async () => { const dir = await api.pickFolder(); if (dir) field('defaultCwd', dir); })}>选择</button></div></label>
       <h2>外观</h2>
       {state.settingsWarning && <p role="alert">{state.settingsWarning}</p>}
-      <label>主题<select value={prefs.theme || 'light'} onChange={e => field('theme', e.target.value)}><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select></label>
+      <label>主题<GlassSelect ariaLabel="主题" value={prefs.theme || 'light'} onChange={(value) => field('theme', value)} options={[{ value: 'light', label: '浅色' }, { value: 'dark', label: '深色' }, { value: 'system', label: '跟随系统' }]} /></label>
       <label>字号 <span><input type="number" min="12" max="20" value={prefs.fontSize ?? 14} onChange={e => field('fontSize', Number(e.target.value))} /> px</span></label>
       <h2>恢复</h2>
       <label>任务运行时确认退出<input type="checkbox" checked={prefs.confirmExit !== false} onChange={e => field('confirmExit', e.target.checked)} /></label>
@@ -131,13 +224,15 @@ export function Workbench({ page, state, onState, onClose }) {
       <h2>项目文件</h2><form className="wb-commit" onSubmit={e => { e.preventDefault(); act(async () => { await api.createCheckpoint({ cwd, label }); setLabel(''); await load(); }); }}><input aria-label="检查点名称" placeholder="检查点名称" value={label} onChange={e => setLabel(e.target.value)} /><button className="btn primary" disabled={busy || projectRunning}>建立检查点</button></form>
       {state.checkpointWarning && <p className="wb-error">{state.checkpointWarning}</p>}
       {checkpoints.length === 0 && <p>还没有文件检查点。</p>}
-      <div className="wb-records">{checkpoints.map(c => <article key={c.id}><div><b>{c.label}</b><small>{when(c.at)} · {c.count} 个文件</small></div><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => setRestore(await api.previewRestore({ cwd, id: c.id })))}>预览恢复</button><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => {setCheckpoints(await api.deleteCheckpoint({cwd,id:c.id})); setRestore(null);})}>删除</button></article>)}</div>
-      {restore && <div className="wb-restore"><h3>恢复「{restore.label}」</h3>{restore.files.length ? <ul>{restore.files.map(f => <li key={f.path}><b>{f.action}</b> {f.path}</li>)}</ul> : <p>文件内容一致。</p>}<button className="btn danger" disabled={busy || projectRunning || !restore.files.length} onClick={() => act(async () => { const r = await api.restoreCheckpoint({ cwd, ...restore }); if (!r.canceled) { await load(); } })}>恢复这些文件</button></div>}
+      <div className="wb-records">{checkpoints.map(c => <article key={c.id} className={`wb-record${restore?.id === c.id ? ' open' : ''}`}>
+        <div className="wb-record-main"><div><b>{c.label}</b><small>{when(c.at)} · {c.count} 个文件</small></div><div className="wb-actions"><button className="btn ghost" disabled={busy || projectRunning} onClick={() => { if (restore?.id === c.id) { setRestore(null); return; } act(async () => setRestore(await api.previewRestore({ cwd, id: c.id })), '正在对比文件…'); }}>恢复</button><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => {setCheckpoints(await api.deleteCheckpoint({cwd,id:c.id})); setRestore(null);})}>删除</button></div></div>
+        {restore?.id === c.id && <div className="wb-restore" ref={restoreBox}>{restore.files.length ? <ul className="wb-restore-files">{restore.files.map(f => <li key={f.path}><em>{f.action}</em><span>{f.path}</span></li>)}</ul> : <p>没有需要改回的文件。</p>}<div className="wb-actions">{restore.files.length > 0 && <button type="button" className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => { const r = await api.restoreCheckpoint({ cwd, ...restore }); if (!r.canceled) { await load(); } })}>确认恢复</button>}<button type="button" className="btn ghost" disabled={busy} onClick={() => setRestore(null)}>取消</button></div></div>}
+      </article>)}</div>
       <h2>对话回退</h2>{pointError && <p className="wb-error">{pointError}</p>}{!state.sessionId ? <p>先打开一次对话。</p> : !points.length && !pointError ? <p>当前对话还没有回退点。</p> : null}
-      <div className="wb-records">{points.map(p => <article key={p.index}><div><b>{String(p.label)}</b><small>{p.at ? when(p.at) : `第 ${p.index + 1} 轮`}</small></div><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => { const r = await api.rewindExecute({ cwd, sessionId: state.sessionId, index: p.index }); if (!r.canceled) { setResult(r); await load(); } })}>回到此处</button></article>)}</div>
+      <div className="wb-records">{points.map(p => <article key={p.index}><div><b>{String(p.label)}</b><small>{p.at ? when(p.at) : `第 ${p.index + 1} 轮`}</small></div><div className="wb-actions"><button className="btn ghost" disabled={busy || projectRunning} onClick={() => act(async () => { const r = await api.rewindExecute({ cwd, sessionId: state.sessionId, index: p.index }); if (!r.canceled) { setResult(r); await load(); } })}>回到此处</button></div></article>)}</div>
     </>)}
     {page === 'archives' && <div className="wb-settings">
-      <h2>导出当前对话</h2><label>格式<select value={format} onChange={e => setFormat(e.target.value)}><option value="md">Markdown</option><option value="json">JSON</option><option value="html">HTML</option></select></label><button className="btn primary" disabled={busy || !state.sessionId || state.running} onClick={() => act(async () => setResult(await api.exportChat({ cwd, sessionId: state.sessionId, format })))}>导出对话</button>
+      <h2>导出当前对话</h2><label>格式<GlassSelect ariaLabel="导出格式" value={format} onChange={setFormat} options={[{ value: 'md', label: 'Markdown' }, { value: 'json', label: 'JSON' }, { value: 'html', label: 'HTML' }]} /></label><button className="btn primary" disabled={busy || !state.sessionId || state.running} onClick={() => act(async () => setResult(await api.exportChat({ cwd, sessionId: state.sessionId, format })))}>导出对话</button>
       <h2>数据备份</h2><label>加密密码（可选）<input type="password" autoComplete="new-password" value={backupPassword} onChange={e => setBackupPassword(e.target.value)} /></label><button className="btn primary" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => {setResult(await api.backupCreate(backupPassword)); setBackupPassword('');})}>{backupPassword ? '创建加密备份' : '创建未加密备份'}</button>
       <h2>恢复备份</h2><label>备份密码<input type="password" autoComplete="off" value={restorePassword} onChange={e => setRestorePassword(e.target.value)} /></label><button className="btn ghost" disabled={busy} onClick={() => act(async () => {setBackup(await api.backupInspect(restorePassword)); setRestorePassword('');})}>选择备份</button>{backup && <div className="wb-restore"><p>{backup.path}</p><p>{when(backup.at)} · {backup.count} 个文件</p><button className="btn danger" disabled={busy || state.runningIds?.length > 0} onClick={() => act(async () => setResult(await api.backupRestore()))}>恢复并重启</button></div>}
     </div>}

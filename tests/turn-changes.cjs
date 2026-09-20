@@ -107,8 +107,8 @@ test('change card opens a side drawer and file rows can collapse it', () => {
   assert.doesNotMatch(ui, /className="change-review"/);
   assert.equal(/[⌃⌄]/.test(ui), false);
   assert.match(css, /\.change-drawer\{/);
-  assert.match(css, /transform:translateX\(100%\)/);
-  assert.match(css, /transition:transform \.28s/);
+  assert.match(css, /transform:translateX\(calc\(100% \+ 24px\)\) scale\(\.98\)/);
+  assert.match(css, /transition:transform var\(--panel-duration\) var\(--panel-ease\)/);
   assert.match(css, /\.main-stage-chat\{/);
   assert.match(ui, /setOpen\(false\)/);
   assert.match(css, /\.change-expand\[aria-expanded=true\] \.change-chevron\{transform:rotate\(180deg\)\}/);
