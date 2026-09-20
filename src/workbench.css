@@ -45,31 +45,18 @@
 .recovery-bar{margin:12px 20px;padding:10px 14px;border:1px solid #e0c79c;background:#fff8ec;border-radius:10px;display:flex;justify-content:space-between;gap:12px;align-items:center}.recovery-bar small{display:block;color:#8f7350}.permission-list{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px}.permission-list button{border:1px solid #cbdce3;background:#fff;border-radius:8px;padding:7px;color:#294452}.permission-list button.active{background:#d6f0f5}.permission-origin{font-size:12px;color:#617d91;overflow-wrap:anywhere;margin:8px 0}
 .app{--chat-font:14px}.app .md,.app .bubble.user{font-size:var(--chat-font)}
 .permission-tabs{display:flex;flex-wrap:wrap;gap:6px}.recovery-bar{flex-shrink:0;font-size:12px;flex-wrap:wrap}.recovery-bar>span{flex:1;min-width:180px}.main>.workbench{flex:1;min-height:0;height:auto}.chip .chat-img{width:48px;height:48px;object-fit:cover}
-.app[data-theme=dark]{--surface:#182830;--bg:#101e26;--bg-2:#182830;--bg-3:#263c47;--user:#24444d;--text:#e1edf1;--muted:#9bb0bd;--line:#314650;background:#101e26;color:var(--text)}
-.app[data-theme=dark]{--accent-2:#93B4FF;--ring-track:#3b505e;--ring-progress:#60A5FA;--scroll-thumb:#698390;color-scheme:dark}
-.app[data-theme=dark] .diff-add{background:#183e32;color:#9ce5b7}.app[data-theme=dark] .diff-remove{background:#472b31;color:#ffb0b0}.app[data-theme=dark] .diff-hunk{background:#253b54;color:#a9cffb}.app[data-theme=dark] .diff-unmodified{background:#13212a}
-.app[data-theme=dark] :is(.composer-card,.menu,.suggest,.tool-card,.queue,.skill-card,.chip.file,.file-pill){background:#182830;color:#e1edf1;border-color:#314650}
-.app[data-theme=dark] :is(.side,.main,.topbar,.composer,.ctx-pop,.model-pop,.mode-pop,.modal,.skills-page,.workbench,.wb-review){background:#182830;color:#e1edf1;border-color:#314650}
-.app[data-theme=dark] :is(input,textarea,select,.md pre,.tool pre,.skills-search,.composer-card textarea){background:#13212a;color:#e1edf1;border-color:#314650}
-.app[data-theme=dark] :is(.md,.brand strong,.project-name,.session,.bubble.user,.side-tools button,.btn.ghost){color:#e1edf1}
-.app[data-theme=dark] .side-tools button{background:#182830;color:#e1edf1}
-.app[data-theme=dark] :is(.side-tools button.active,.side-tools button:hover,.wb-files>button.selected){background:#24444d;color:#e1edf1}
-.app[data-theme=dark] .wb-files-head{background:#182830;color:#9bb0bd;border-color:#314650}
-.app[data-theme=dark] .wb-result{background:#183e32;color:#9ce5b7}
+.app[data-theme=dark] .diff-add{background:#1a3b32;color:#9ce5b7}.app[data-theme=dark] .diff-remove{background:#472b31;color:#ffb0b0}.app[data-theme=dark] .diff-hunk{background:#24344d;color:#a9cffb}.app[data-theme=dark] .diff-unmodified{background:rgba(255,255,255,.03)}
+.app[data-theme=dark] .wb-result{background:#1a3b32;color:#9ce5b7}
 .app[data-theme=dark] .wb-error{background:#472b31;color:#ffb0b0;border-color:#6a3a42}
-.app[data-theme=dark] .wb-progress{color:#7ad4c8}
-.app[data-theme=dark] .wb-restore{border-color:#8a6a4a;background:#2a241c;color:#f7e1c2}
-.app[data-theme=dark] .wb-record .wb-restore{border-color:#314650;background:transparent;color:inherit}
+.app[data-theme=dark] .wb-progress{color:var(--accent-2)}
+.app[data-theme=dark] .wb-restore{border-color:var(--line);background:var(--glass-fill);color:inherit}
+.app[data-theme=dark] .wb-record .wb-restore{border-color:var(--line);background:transparent;color:inherit}
 .app[data-theme=light] .wb-record .wb-restore{border-color:rgba(150,152,156,.28);background:transparent;color:inherit}
 .app[data-theme=dark] .recovery-bar{background:#3b3022;color:#f7e1c2;border-color:#8a6a4a}
-.app[data-theme=dark] .permission-list button{background:#13212a;color:#e1edf1;border-color:#314650}
-.app[data-theme=dark] .permission-list button.active{background:#24444d;color:#e1edf1}
-.app[data-theme=dark] .permission-origin{color:#9bb0bd}
-.app[data-theme=dark] .btn{background:#263c47;color:#e1edf1}
-.app[data-theme=dark] .btn.ghost{background:transparent;color:#e1edf1;border-color:#314650}
-.app[data-theme=dark] .btn.primary{background:#3B82F6;color:#fff}
-.app[data-theme=dark] .btn.danger{background:#263c47;color:#e1edf1;border:1px solid #314650}
-.app[data-theme=dark] .new-project{background:transparent;color:#e1edf1;border-color:#314650}
+.app[data-theme=dark] .permission-list button{background:var(--glass-fill);color:var(--text);border-color:var(--line)}
+.app[data-theme=dark] .permission-list button.active{background:var(--bg-3);color:var(--text)}
+.app[data-theme=dark] .permission-origin{color:var(--muted)}
+.app[data-theme=dark] .md pre,.app[data-theme=dark] .tool pre{background:#14161c;color:var(--text);border-color:var(--line)}
 @media(max-width:1100px){.workbench{padding:22px}.workbench.wb-fill{padding:16px}.wb-head{align-items:flex-start}.wb-settings label{gap:12px}.wb-review{grid-template-columns:minmax(180px,34%) minmax(0,1fr)}}
 
 .glass-select{position:relative;min-width:168px;max-width:280px}
@@ -78,29 +65,45 @@
 .glass-select{display:inline-flex}
 .glass-select-btn{position:relative}
 .glass-select.open .glass-select-btn::after{transform:rotate(225deg);translate:0 2px}
-.glass-select-pop{position:fixed;z-index:80;min-width:168px;max-height:min(280px,70vh);overflow:auto;padding:6px;border-radius:16px;background:#fff padding-box,linear-gradient(165deg,#fff 0%,rgba(255,255,255,.9) 48%,rgba(168,170,174,.55) 100%) border-box;background-origin:border-box;background-clip:padding-box,border-box;color:#203340;--accent-2:#1D4ED8;border:1px solid transparent;box-shadow:inset 0 1px 0 #fff,0 0 0 1px rgba(150,152,156,.28),0 18px 40px rgba(40,55,70,.10);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)}
+.glass-select-pop{position:fixed;z-index:80;min-width:168px;max-height:min(280px,70vh);overflow:auto;padding:6px;border-radius:16px;background-color:#ffffff;background-image:none;color:#203340;--accent-2:#1D4ED8;border:1px solid rgba(150,152,156,.35);box-shadow:0 18px 40px rgba(40,55,70,.14);backdrop-filter:none;-webkit-backdrop-filter:none;isolation:isolate}
 .glass-select-pop button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:9px 12px;border-radius:12px;cursor:pointer;font:inherit;font-size:13px;font-weight:650}
 .glass-select-pop button em{font-style:normal;color:var(--accent-2);min-width:1em}
-.app[data-theme=light] .workbench{background:transparent}
-.app[data-theme=light] .wb-head .btn.ghost{border-radius:999px;padding:8px 14px}
-.app[data-theme=light] .wb-settings{max-width:820px;padding:8px}
-.app[data-theme=light] .wb-settings h2{margin:22px 6px 10px;font-size:15px;letter-spacing:.04em}
-.app[data-theme=light] .wb-settings label{margin:6px 0;padding:12px 14px;border:1px solid transparent;border-radius:16px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-bloom);transition:background 160ms ease,box-shadow 160ms ease}
-.app[data-theme=light] .wb-settings label:hover{background:#fff padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),0 8px 20px rgba(42,93,116,.08)}
-.app[data-theme=light] .workbench input:not([type=checkbox]),.app[data-theme=light] .workbench select{border:1px solid transparent;border-radius:999px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge);padding:8px 14px;outline:none;caret-color:currentColor;transition:background 160ms ease,box-shadow 160ms ease}
-.app[data-theme=light] .workbench input:not([type=checkbox]):hover,.app[data-theme=light] .workbench input:not([type=checkbox]):focus,.app[data-theme=light] .workbench input:not([type=checkbox]):focus-visible{outline:none;border-color:transparent;background:#fff padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),0 6px 16px rgba(42,93,116,.08)}
+.app[data-theme] .workbench{background:transparent}
+.app[data-theme] .wb-head .btn.ghost{border-radius:999px;padding:8px 14px}
+.app[data-theme] .wb-settings{max-width:820px;padding:8px}
+.app[data-theme] .wb-settings h2{margin:22px 6px 10px;font-size:15px;letter-spacing:.04em}
+.app[data-theme] .wb-settings label{margin:6px 0;padding:12px 14px;border:1px solid transparent;border-radius:16px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-bloom);transition:background 160ms ease,box-shadow 160ms ease}
+.app[data-theme] .wb-settings label:hover{background:var(--glass-lift) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-float)}
+.app[data-theme] .workbench input:not([type=checkbox]),.app[data-theme] .workbench select{border:1px solid transparent;border-radius:999px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge);padding:8px 14px;outline:none;caret-color:currentColor;transition:background 160ms ease,box-shadow 160ms ease}
+.app[data-theme] .workbench input:not([type=checkbox]):hover,.app[data-theme] .workbench input:not([type=checkbox]):focus,.app[data-theme] .workbench input:not([type=checkbox]):focus-visible{outline:none;border-color:transparent;background:var(--glass-lift) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-float)}
 .glass-select-pop button:hover{background:rgba(32,51,64,.05)}
 .glass-select-pop button.active{background:rgba(32,51,64,.06);box-shadow:none}
-.app[data-theme=light] .glass-select-btn:hover,.app[data-theme=light] .glass-select.open .glass-select-btn{background:#fff padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),0 8px 18px rgba(42,93,116,.1)}
-.app[data-theme=light] .wb-review{border:1px solid transparent;border-radius:20px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),0 12px 32px rgba(42,93,116,.07)}
-.app[data-theme=light] .wb-files{border-color:transparent}
-.app[data-theme=light] .wb-files-head{background:transparent;border-color:transparent}
-.app[data-theme=light] .wb-files>button{border:0;border-radius:12px;margin:4px;transition:background 160ms ease,box-shadow 160ms ease,transform 160ms var(--panel-ease)}
-.app[data-theme=light] .wb-files>button:hover{background:#fff;box-shadow:var(--glass-edge);transform:translateY(-1px)}
-.app[data-theme=light] .wb-files>button.selected{background:#fff;box-shadow:var(--glass-edge),inset 2.5px 0 0 var(--accent)}
-.app[data-theme=light] .wb-commit input{border-radius:14px}
-.app[data-theme=light] .wb-records article{border:1px solid transparent;border-radius:14px;padding:12px 14px;margin:6px 0;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge);transition:background 160ms ease}
-.app[data-theme=light] .wb-records article:hover{background:#fff padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box}
-.app[data-theme=dark] .glass-select-btn{background:#13212a;color:#e1edf1;box-shadow:none;border:1px solid #314650}
-.glass-select-pop[data-theme=dark]{background:#182830;color:#e1edf1;border:1px solid #314650;--accent-2:#93B4FF}
-.glass-select-pop[data-theme=dark] button:hover,.glass-select-pop[data-theme=dark] button.active,.app[data-theme=dark] .glass-select-pop button:hover,.app[data-theme=dark] .glass-select-pop button.active{background:#24444d}
+.app[data-theme] .glass-select-btn:hover,.app[data-theme] .glass-select.open .glass-select-btn{background:var(--glass-lift) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-float)}
+.app[data-theme] .wb-review{border:1px solid transparent;border-radius:20px;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge),var(--glass-float)}
+.app[data-theme] .wb-files{border-color:transparent}
+.app[data-theme] .wb-files-head{background:transparent;border-color:transparent}
+.app[data-theme] .wb-files>button{border:0;border-radius:12px;margin:4px;transition:background 160ms ease,box-shadow 160ms ease,transform 160ms var(--panel-ease)}
+.app[data-theme] .wb-files>button:hover{background:var(--glass-lift);box-shadow:var(--glass-edge);transform:translateY(-1px)}
+.app[data-theme] .wb-files>button.selected{background:var(--glass-fill);box-shadow:var(--glass-edge),inset 2.5px 0 0 var(--accent)}
+.app[data-theme] .wb-commit input{border-radius:14px}
+.app[data-theme] .wb-records article{border:1px solid transparent;border-radius:14px;padding:12px 14px;margin:6px 0;background:var(--glass-fill) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box;box-shadow:var(--glass-edge);transition:background 160ms ease}
+.app[data-theme] .wb-records article:hover{background:var(--glass-lift) padding-box,var(--glass-rim) border-box;background-clip:padding-box,border-box}
+.app[data-theme=dark] .glass-select-btn{background:var(--glass-fill);color:var(--text);box-shadow:var(--glass-edge);border:1px solid transparent}
+.glass-select-pop[data-theme=dark]{
+  background-color:#1c1e24;
+  background-image:none;
+  color:#e8eaef;
+  --text:#e8eaef;
+  --accent-2:#93B4FF;
+  --bg-3:rgba(255,255,255,.06);
+  --overlay-fill:#1c1e24;
+  --line:rgba(255,255,255,.10);
+  border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 16px 36px rgba(0,0,0,.45);
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+.glass-select-pop[data-theme=dark] button:hover,
+.glass-select-pop[data-theme=dark] button.active,
+.app[data-theme=dark] .glass-select-pop button:hover,
+.app[data-theme=dark] .glass-select-pop button.active{background:rgba(255,255,255,.06);color:#e8eaef}

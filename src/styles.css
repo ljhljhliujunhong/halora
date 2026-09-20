@@ -63,6 +63,7 @@ select {
   height: 100%;
   accent-color: var(--accent);
   caret-color: var(--text);
+  --chat-font: 14px;
   transition: grid-template-columns var(--panel-duration) var(--panel-ease);
 }
 
@@ -986,16 +987,22 @@ select {
   border-radius: 16px 16px 4px 16px;
   padding: 12px 14px;
   white-space: pre-wrap;
+  font-size: var(--chat-font, 14px);
+  line-height: 1.7;
+  font-weight: 400;
 }
 
 .bubble.assistant {
   align-self: stretch;
   min-width: 0;
+  font-size: var(--chat-font, 14px);
 }
 
 .md {
   line-height: 1.7;
   overflow-wrap: anywhere;
+  font-size: var(--chat-font, 14px);
+  font-weight: 400;
 }
 
 .md > :first-child {
@@ -1175,8 +1182,8 @@ select {
 }
 
 .md :not(pre) > code {
-  background: rgba(224, 179, 106, 0.12);
-  color: var(--gold);
+  background: var(--bg-3);
+  color: var(--accent-2);
   border-radius: 5px;
   padding: 1px 5px;
 }
@@ -1520,6 +1527,9 @@ select {
   border: 0;
   padding: 6px 4px 10px;
   outline: none;
+  font-size: var(--chat-font, 14px);
+  line-height: 1.7;
+  font-weight: 400;
 }
 
 .composer-bar {
@@ -1924,6 +1934,18 @@ select {
   border: 2px solid transparent;
 }
 
+.app[data-theme=dark] {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.app[data-theme=dark] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: padding-box;
+}
+.app[data-theme=dark] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: padding-box;
+}
+
 .skills-page {
   flex: 1;
   min-height: 0;
@@ -2201,7 +2223,11 @@ select {
     0 0 0 1px rgba(150, 152, 156, 0.28),
     0 14px 32px rgba(40, 55, 70, 0.08);
   --glass-fill: #ffffff;
+  --glass-lift: #ffffff;
   --glass-rim: linear-gradient(165deg, #ffffff 0%, rgba(255, 255, 255, 0.9) 48%, rgba(168, 170, 174, 0.55) 100%);
+  --glass-float: 0 8px 18px rgba(40, 90, 110, 0.10);
+  --glass-drop: 0 18px 44px -12px rgba(40, 55, 70, 0.12);
+  --overlay-fill: #ffffff;
   --shadow: var(--glass-edge), var(--glass-bloom);
   background:
     radial-gradient(ellipse at 0% 6%, rgba(160, 176, 188, 0.10), transparent 42%),
@@ -2211,23 +2237,66 @@ select {
   color-scheme: light;
 }
 
-.app[data-theme=light] .main { background: transparent; }
-.app[data-theme=light] .side {
+[data-theme=dark] {
+  --bg: #12141a;
+  --bg-2: #1c1e24;
+  --bg-3: rgba(255, 255, 255, 0.06);
+  --surface: #1c1e24;
+  --text: #e8eaef;
+  --muted: #9aa0ab;
+  --accent-2: #93B4FF;
+  --user: #1c1e24;
+  --gold-2: #c9b48a;
+  --ok: #5dcaa0;
+  --danger: #e88989;
+  --line: rgba(255, 255, 255, 0.08);
+  --ring-track: #2a2d36;
+  --ring-progress: #60A5FA;
+  --scroll-thumb: #6b7180;
+  --glass-edge:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --glass-bloom:
+    0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 16px 36px rgba(0, 0, 0, 0.38);
+  --glass-fill: #1c1e24;
+  --glass-lift: #262830;
+  --glass-rim: linear-gradient(165deg, rgba(255,255,255,.32) 0%, rgba(255,255,255,.10) 48%, rgba(168,170,174,.42) 100%);
+  --glass-float: 0 8px 20px rgba(0, 0, 0, 0.38);
+  --glass-drop: 0 18px 44px -12px rgba(0, 0, 0, 0.5);
+  --overlay-fill: #1c1e24;
+  --shadow: var(--glass-edge), var(--glass-bloom);
+  color-scheme: dark;
+}
+
+.app[data-theme=dark] {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  background:
+    radial-gradient(ellipse at 0% 6%, rgba(90, 100, 120, 0.16), transparent 42%),
+    radial-gradient(ellipse at 96% 4%, rgba(110, 96, 150, 0.10), transparent 36%),
+    radial-gradient(ellipse at 76% 100%, rgba(80, 90, 110, 0.12), transparent 46%),
+    #12141a;
+  color: var(--text);
+}
+
+.app[data-theme] .main { background: transparent; }
+.app[data-theme] .side {
   position: relative;
   z-index: 5;
   margin: 10px 0 10px 8px;
   padding: 18px 8px 0;
   border: 1px solid transparent;
   border-radius: 22px;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   backdrop-filter: blur(28px) saturate(1.25);
-  box-shadow: var(--glass-edge), 5px 12px 32px rgba(49, 96, 113, 0.045);
+  box-shadow: var(--glass-edge), var(--glass-float);
 }
-.app[data-theme=light] .side-top { margin-bottom: 12px; }
-.app[data-theme=light] .brand strong { letter-spacing: .08em; }
-.app[data-theme=light] .session-list { padding-bottom: 10px; }
-.app[data-theme=light] .side-dock {
+.app[data-theme] .side-top { margin-bottom: 12px; }
+.app[data-theme] .brand strong { letter-spacing: .08em; }
+.app[data-theme] .session-list { padding-bottom: 10px; }
+.app[data-theme] .side-dock {
   margin: 4px 0 10px;
   padding: 8px 6px 6px;
   border-radius: 18px;
@@ -2238,7 +2307,7 @@ select {
   backdrop-filter: blur(18px) saturate(1.2);
   overflow: visible;
 }
-.app[data-theme=light] .side.collapsed .side-dock {
+.app[data-theme] .side.collapsed .side-dock {
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -2246,217 +2315,217 @@ select {
   padding: 8px 0;
   animation: none;
 }
-.app[data-theme=light] .side-new {
-  background: #fff;
-  box-shadow: var(--glass-edge), 0 4px 12px rgba(57,112,124,.035);
+.app[data-theme] .side-new {
+  background: var(--glass-fill);
+  box-shadow: var(--glass-edge), var(--glass-float);
   border-radius: 12px;
   color: var(--text);
   overflow: hidden;
   transition: background 180ms ease, box-shadow 180ms ease, transform 180ms var(--panel-ease);
 }
-.app[data-theme=light] .side-new:hover:not(:disabled) {
-  background: rgba(255,255,255,.94);
+.app[data-theme] .side-new:hover:not(:disabled) {
+  background: var(--glass-lift);
   transform: translateY(-1px);
-  box-shadow: var(--glass-edge), 0 8px 18px rgba(57,112,124,.08);
+  box-shadow: var(--glass-edge), var(--glass-float);
 }
-.app[data-theme=light] .side-new svg { color: var(--accent-2); }
-.app[data-theme=light] .project-head {
+.app[data-theme] .side-new svg { color: var(--accent-2); }
+.app[data-theme] .project-head {
   transition: background 180ms ease, box-shadow 180ms ease, transform 180ms var(--panel-ease);
 }
-.app[data-theme=light] :is(.project-head.current, .project-head:hover) {
-  background: #fff;
-  box-shadow: var(--glass-edge), 0 6px 16px rgba(57,112,124,.08);
+.app[data-theme] :is(.project-head.current, .project-head:hover) {
+  background: var(--glass-lift);
+  box-shadow: var(--glass-edge), var(--glass-float);
 }
-.app[data-theme=light] .project-head:hover { transform: translateY(-1px); }
-.app[data-theme=light] .session { border-radius: 12px; }
-.app[data-theme=light] .session:hover {
-  background: #fff;
-  box-shadow: var(--glass-edge), 0 7px 18px rgba(57,112,124,.10);
+.app[data-theme] .project-head:hover { transform: translateY(-1px); }
+.app[data-theme] .session { border-radius: 12px; }
+.app[data-theme] .session:hover {
+  background: var(--glass-lift);
+  box-shadow: var(--glass-edge), var(--glass-float);
   transform: translateY(-1px);
 }
-.app[data-theme=light] .session.active {
+.app[data-theme] .session.active {
   border: 1px solid transparent;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
-  box-shadow: var(--glass-edge), inset 2.5px 0 0 var(--accent), 0 8px 18px rgba(57,112,124,.12);
+  box-shadow: var(--glass-edge), inset 2.5px 0 0 var(--accent), var(--glass-float);
   transform: none;
 }
-.app[data-theme=light] .side-tools { gap: 6px; }
-.app[data-theme=light] .side-tools button {
+.app[data-theme] .side-tools { gap: 6px; }
+.app[data-theme] .side-tools button {
   min-height: 38px;
   border-radius: 12px;
   padding: 8px 10px;
   transition: background 160ms ease, box-shadow 160ms var(--panel-ease), transform 160ms var(--panel-ease), color 160ms ease;
 }
-.app[data-theme=light] :is(.side-tools button:hover, .side-skills:hover) {
+.app[data-theme] :is(.side-tools button:hover, .side-skills:hover) {
   color: var(--text);
-  background: #fff;
-  box-shadow: var(--glass-edge), 0 6px 16px rgba(40,100,120,.10);
+  background: var(--glass-lift);
+  box-shadow: var(--glass-edge), var(--glass-float);
   transform: translateY(-1px);
 }
-.app[data-theme=light] :is(.side-tools button.active, .side-skills.active) {
+.app[data-theme] :is(.side-tools button.active, .side-skills.active) {
   color: var(--accent-2);
   border: 1px solid transparent;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), var(--glass-bloom);
   transform: none;
 }
-.app[data-theme=light] .side-tools button.active svg,
-.app[data-theme=light] .side-tools button:hover svg,
-.app[data-theme=light] .side-skills.active svg,
-.app[data-theme=light] .side-skills:hover svg { color: var(--accent-2); }
-.app[data-theme=light] .top { padding: 22px 28px 16px; border: 0; }
-.app[data-theme=light] .model-btn {
+.app[data-theme] .side-tools button.active svg,
+.app[data-theme] .side-tools button:hover svg,
+.app[data-theme] .side-skills.active svg,
+.app[data-theme] .side-skills:hover svg { color: var(--accent-2); }
+.app[data-theme] .top { padding: 22px 28px 16px; border: 0; }
+.app[data-theme] .model-btn {
   border: 1px solid transparent;
   background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), var(--glass-bloom);
   transition: background 160ms ease, box-shadow 160ms ease, transform 160ms var(--panel-ease);
 }
-.app[data-theme=light] .model-btn:hover,
-.app[data-theme=light] .model-btn.open {
-  background: #fff padding-box, var(--glass-rim) border-box;
+.app[data-theme] .model-btn:hover,
+.app[data-theme] .model-btn.open {
+  background: var(--glass-lift) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
-  box-shadow: var(--glass-edge), 0 8px 20px rgba(49,96,113,.10);
+  box-shadow: var(--glass-edge), var(--glass-float);
   transform: translateY(-1px);
 }
-.app[data-theme=light] :is(.btn.ghost, .btn.primary, .btn.danger) {
+.app[data-theme] :is(.btn.ghost, .btn.primary, .btn.danger) {
   border: 1px solid transparent;
   border-radius: 999px;
   min-height: 36px;
   padding: 8px 14px;
   background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
-  color: #214f5c;
+  color: var(--text);
   box-shadow: var(--glass-edge), var(--glass-bloom);
   transition: background 160ms ease, box-shadow 160ms ease, transform 160ms var(--panel-ease);
 }
-.app[data-theme=light] :is(.btn.primary, .send-btn) {
-  background: #fff padding-box, var(--glass-rim) border-box;
+.app[data-theme] :is(.btn.primary, .send-btn) {
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
 }
-.app[data-theme=light] .send-btn {
+.app[data-theme] .send-btn {
   border: 1px solid transparent;
-  color: #214f5c;
-  box-shadow: var(--glass-edge), 0 5px 14px rgba(51,123,139,.10);
+  color: var(--text);
+  box-shadow: var(--glass-edge), var(--glass-float);
 }
-.app[data-theme=light] .btn.gold {
+.app[data-theme] .btn.gold {
   background: linear-gradient(135deg, rgba(255,248,230,.96), rgba(201,165,106,.42)) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), inset 0 0 0 1px rgba(185,149,85,.28), 0 4px 12px rgba(51,123,139,.06);
 }
-.app[data-theme=light] :is(.btn.ghost, .btn.primary, .btn.danger):hover:not(:disabled):not(.side-toggle) {
-  background: #fff padding-box, var(--glass-rim) border-box;
+.app[data-theme] :is(.btn.ghost, .btn.primary, .btn.danger):hover:not(:disabled):not(.side-toggle) {
+  background: var(--glass-lift) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
-  color: #214f5c;
-  box-shadow: var(--glass-edge), 0 8px 18px rgba(40,90,110,.10);
+  color: var(--text);
+  box-shadow: var(--glass-edge), var(--glass-float);
   transform: translateY(-1px);
 }
-.app[data-theme=light] .btn.ghost.side-toggle {
-  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(150, 152, 156, 0.28);
+.app[data-theme] .btn.ghost.side-toggle {
+  box-shadow: var(--glass-edge), var(--glass-bloom);
 }
-.app[data-theme=light] .btn.ghost.side-toggle:hover:not(:disabled) {
-  background: #fff padding-box, var(--glass-rim) border-box;
+.app[data-theme] .btn.ghost.side-toggle:hover:not(:disabled) {
+  background: var(--glass-lift) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   transform: none;
-  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(150, 152, 156, 0.4);
+  box-shadow: var(--glass-edge), var(--glass-bloom);
 }
-.app[data-theme=light] .side.collapsed .btn.side-toggle:hover:not(:disabled) {
+.app[data-theme] .side.collapsed .btn.side-toggle:hover:not(:disabled) {
   transform: none;
 }
 .app[data-theme=light] .btn:hover:not(:disabled):not(.ghost):not(.primary):not(.gold):not(.danger):not(.side-toggle) { background-color: rgba(255,255,255,.85); }
-.app[data-theme=light] .thread { padding-top: 30px; }
-.app[data-theme=light] .thread-content { gap: 24px; }
-.app[data-theme=light] .bubble.user {
+.app[data-theme] .thread { padding-top: 30px; }
+.app[data-theme] .thread-content { gap: 24px; }
+.app[data-theme] .bubble.user {
   border: 1px solid transparent;
   border-radius: 20px 20px 7px 20px;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), var(--glass-bloom);
   padding: 14px 18px;
 }
-.app[data-theme=light] .bubble.assistant {
+.app[data-theme] .bubble.assistant {
   border: 1px solid transparent;
   border-radius: 7px 22px 22px 22px;
   padding: 20px 22px;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), var(--glass-bloom);
 }
-.app[data-theme=light] .composer-card {
+.app[data-theme] .composer-card {
   padding: 16px 16px 12px;
   border: 1px solid transparent;
   border-radius: 26px;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   backdrop-filter: blur(28px) saturate(1.15);
-  box-shadow: var(--glass-edge), var(--glass-bloom), 0 18px 44px -12px rgba(40,55,70,.12);
+  box-shadow: var(--glass-edge), var(--glass-bloom), var(--glass-drop);
   transition: box-shadow 180ms ease;
 }
-.app[data-theme=light] :is(.md a, .md :not(pre) > code) { color: var(--accent-2); }
-.app[data-theme=light] .md :not(pre) > code { background: rgba(32,51,64,.06); }
-.app[data-theme=light] .composer-wrap { padding-block: 12px 28px; }
-.app[data-theme=light] .composer-card:focus-within {
-  box-shadow: var(--glass-edge), var(--glass-bloom), 0 18px 44px -12px rgba(40,55,70,.14);
+.app[data-theme] :is(.md a, .md :not(pre) > code) { color: var(--accent-2); }
+.app[data-theme] .md :not(pre) > code { background: var(--bg-3); }
+.app[data-theme] .composer-wrap { padding-block: 12px 28px; }
+.app[data-theme] .composer-card:focus-within {
+  box-shadow: var(--glass-edge), var(--glass-bloom), var(--glass-drop);
 }
-.app[data-theme=light] textarea::placeholder { color: var(--muted); opacity: 1; }
-.app[data-theme=light] .send-btn { border-radius: 12px; }
-.app[data-theme=light] :is(.ctx-pop, .model-pop, .mode-pop, .suggest, .menu, .modal) {
-  background: #fff;
+.app[data-theme] textarea::placeholder { color: var(--muted); opacity: 1; }
+.app[data-theme] .send-btn { border-radius: 12px; }
+.app[data-theme] :is(.ctx-pop, .model-pop, .mode-pop, .suggest, .menu, .modal) {
+  background: var(--overlay-fill);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border: 1px solid rgba(150, 152, 156, 0.28);
-  box-shadow: 0 16px 40px rgba(40, 55, 70, 0.16);
+  border: 1px solid var(--line);
+  box-shadow: var(--glass-drop);
   border-radius: 18px;
   color: var(--text);
 }
-.app[data-theme=light] .model-pop {
+.app[data-theme] .model-pop {
   padding: 8px;
   min-width: 240px;
   animation: glass-pop 280ms var(--panel-ease);
   transform-origin: top right;
 }
-.app[data-theme=light] .effort-pane {
+.app[data-theme] .effort-pane {
   margin: 2px 2px 6px;
   padding: 10px 12px 12px;
   border: 0;
   border-radius: 14px;
-  background: rgba(255,255,255,.88);
+  background: var(--bg-3);
   box-shadow: var(--glass-edge);
 }
-.app[data-theme=light] .model-item:hover {
-  background: rgba(32, 51, 64, 0.05);
+.app[data-theme] .model-item:hover {
+  background: var(--bg-3);
 }
-.app[data-theme=light] .model-item.active {
-  background: rgba(32, 51, 64, 0.06);
+.app[data-theme] .model-item.active {
+  background: var(--bg-3);
   box-shadow: none;
   transform: none;
 }
-.app[data-theme=light] :is(.thought, .tool, .plan-card, .skill-card, .wb-review) {
+.app[data-theme] :is(.thought, .tool, .plan-card, .skill-card, .wb-review) {
   border: 1px solid transparent;
   background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge), var(--glass-bloom);
 }
-.app[data-theme=light] .skills-page { background: transparent; }
-.app[data-theme=light] .skills-head .btn.ghost { border-radius: 999px; padding: 8px 14px; }
-.app[data-theme=light] .skills-search {
+.app[data-theme] .skills-page { background: transparent; }
+.app[data-theme] .skills-head .btn.ghost { border-radius: 999px; padding: 8px 14px; }
+.app[data-theme] .skills-search {
   border: 1px solid transparent;
   background: var(--glass-fill) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
   box-shadow: var(--glass-edge);
 }
-.app[data-theme=light] .skills-search:hover,
-.app[data-theme=light] .skills-search:focus {
+.app[data-theme] .skills-search:hover,
+.app[data-theme] .skills-search:focus {
   border-color: transparent;
-  background: #fff padding-box, var(--glass-rim) border-box;
+  background: var(--glass-lift) padding-box, var(--glass-rim) border-box;
   background-clip: padding-box, border-box;
-  box-shadow: var(--glass-edge), 0 6px 16px rgba(42,93,116,.08);
+  box-shadow: var(--glass-edge), var(--glass-float);
 }
 .app button:focus-visible, .app a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; }
 
-.app[data-theme=light] :is(
+.app[data-theme] :is(
   .side,
   .side-dock,
   .wb-settings label,
@@ -2498,12 +2567,12 @@ select {
 }
 
 @container chat (max-width: 520px) {
-  .app[data-theme=light] .top { padding: 16px; gap: 8px; }
+  .app[data-theme] .top { padding: 16px; gap: 8px; }
   .thread-content, .composer-wrap { --conversation-gutter: 16px; }
-  .app[data-theme=light] .thread { padding-block: 20px 12px; }
-  .app[data-theme=light] .bubble.assistant { padding: 16px; }
-  .app[data-theme=light] .bubble.user { max-width: 92%; }
-  .app[data-theme=light] .composer-wrap { padding-block: 8px 18px; }
+  .app[data-theme] .thread { padding-block: 20px 12px; }
+  .app[data-theme] .bubble.assistant { padding: 16px; }
+  .app[data-theme] .bubble.user { max-width: 92%; }
+  .app[data-theme] .composer-wrap { padding-block: 8px 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

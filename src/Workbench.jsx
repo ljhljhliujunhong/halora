@@ -14,9 +14,9 @@ function GlassSelect({ value, onChange, options, ariaLabel }) {
     const btn = root.current?.querySelector('.glass-select-btn');
     if (!btn) return;
     const rect = btn.getBoundingClientRect();
-    const width = Math.max(rect.width, 220);
+    const width = Math.max(rect.width, 168);
     let left = rect.left;
-    if (left + width > window.innerWidth - 12) left = window.innerWidth - width - 12;
+    if (left + width > window.innerWidth - 12) left = Math.max(12, window.innerWidth - width - 12);
     if (left < 12) left = 12;
     let top = rect.bottom + 8;
     const estHeight = Math.min(options.length * 44 + 16, 280);
