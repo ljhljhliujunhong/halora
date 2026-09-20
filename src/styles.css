@@ -482,6 +482,36 @@ select {
   box-shadow: 0 0 0 3px rgba(46, 184, 201, 0.16);
 }
 
+.live-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0 4px 2px;
+  color: var(--accent-2);
+  font-size: 13px;
+}
+
+.live-strip .live-dot {
+  animation: live-pulse 1.2s ease-in-out infinite;
+}
+
+.live-strip .turn-time {
+  margin: 0 0 0 auto;
+  color: var(--muted);
+}
+
+.live-strip.in-thread {
+  align-self: flex-start;
+  padding: 0;
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .session b svg {
   flex: 0 0 auto;
   color: var(--gold);
@@ -1255,6 +1285,15 @@ select {
   margin: 0 0 0 auto;
 }
 
+.run-fold.running > summary .activity-label,
+.activity.running > summary .activity-label {
+  color: var(--accent-2);
+}
+
+.run-fold.running > summary .activity-ico {
+  color: var(--accent-2);
+}
+
 .pulse {
   color: var(--accent-2);
   font-size: 13px;
@@ -1422,6 +1461,10 @@ select {
 .composer-card:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(46, 184, 201, 0.16);
+}
+
+.composer-card .suggest {
+  margin: 0 0 8px;
 }
 
 .composer-card textarea {

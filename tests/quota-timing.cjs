@@ -77,6 +77,16 @@ test('steering keeps a new timer when an old completion is applied after the new
   assert.equal(finishActiveTurn(active, done).a, undefined);
 });
 
+test('finished assistants are not reused for a later reply', () => {
+  const chunk = text => ({ sessionUpdate: 'agent_message_chunk', content: { text } });
+  let messages = applyTimedUpdate([{ id: 'u1', role: 'user', text: 'hi' }], chunk('done'), { sessionId: 'a', turnId: 'a:1', startedAt: 1 });
+  messages = finishTimedTurn(messages, { turnId: 'a:1', startedAt: 1, endedAt: 2, durationMs: 1 });
+  messages = applyTimedUpdate(messages, chunk('late'), { sessionId: 'a', turnId: 'a:2', startedAt: 3 });
+  assert.equal(messages.filter(m => m.role === 'assistant').length, 2);
+  assert.equal(messages[1].text, 'done');
+  assert.equal(messages.at(-1).text, 'late');
+});
+
 test('restoring a live transcript recovers its timer without altering completed history', () => {
   const turn = { sessionId: 'a', turnId: 'a:2', startedAt: 6000 };
   const history = [{ role: 'assistant', text: 'old', durationMs: 1000 }, { role: 'user', text: 'next' }, { role: 'assistant', text: 'live' }];

@@ -1,23 +1,21 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "./markdown.js";
 import { applyTimedUpdate, stampActiveAssistant, finishTimedTurn, finishActiveTurn } from './turn-timing.mjs';
 import {
   collectMentions,
   compactHint,
-  filterCommands,
   findCommand,
   formatCount,
   formatDuration,
   formatTokens,
-  mentionAt,
   mergeCommands,
   parseSlash,
-  slashQuery,
 } from "./composer.js";
 import { looksLikeFile, extractFileHint } from "./resource-hint.mjs";
 import brandIcon from "./brand.png";
 import { Workbench } from './Workbench.jsx';
 import { ChangeReviewProvider, ChangeReviewShell, TurnChangesCard, useTurnChanges } from './TurnChanges.jsx';
+import { ComposerField } from "./ComposerField.jsx";
 
 const api = window.workshop;
 function storedComposer() {
@@ -175,7 +173,7 @@ function resourceHintFromEvent(event) {
   return "";
 }
 
-function ChatImage({ image, cwd }) {
+const ChatImage = memo(function ChatImage({ image, cwd }) {
   const openPreview = usePreview();
   const [src, setSrc] = useState(image.src || "");
   useEffect(() => {
@@ -210,7 +208,7 @@ function ChatImage({ image, cwd }) {
       onClick={() => openPreview?.({ src, name: image.name || "" })}
     />
   );
-}
+});
 
 function onMarkdownClick(event, openPreview) {
   const img = event.target.closest("img");
@@ -227,17 +225,18 @@ function onMarkdownClick(event, openPreview) {
   api.openExternal?.(href);
 }
 
-function MarkdownView({ text }) {
+const MarkdownView = memo(function MarkdownView({ text }) {
   const openPreview = usePreview();
+  const html = useMemo(() => renderMarkdown(text), [text]);
   if (!text) return null;
   return (
     <div
       className="md"
       onClick={(event) => onMarkdownClick(event, openPreview)}
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
-}
+});
 
 function isImageFile(file) {
   if (!file) return false;
@@ -626,9 +625,10 @@ function classifyTool(tool) {
   return "other";
 }
 
-function toolRunning(tool) {
+function toolRunning(tool, assumeLive = false) {
   const status = String(tool.status || "").toLowerCase();
-  return Boolean(status) && status !== "completed" && status !== "failed" && status !== "error";
+  if (!status) return assumeLive;
+  return status !== "completed" && status !== "failed" && status !== "error" && status !== "cancelled" && status !== "canceled";
 }
 
 function unifiedDiffStats(text) {
@@ -788,7 +788,7 @@ function groupSummary(group) {
     stats = addDiff(stats, toolDiff(tool));
   }
   const edits = files.size;
-  const running = tools.some(toolRunning);
+  const running = tools.some((tool) => toolRunning(tool));
   if (tools.length === 1 && classifyTool(tools[0]) === "command") {
     return {
       label: running ? "正在执行" : "已执行",
@@ -797,9 +797,9 @@ function groupSummary(group) {
     };
   }
   const parts = [];
-  if (edits) parts.push(`改了 ${edits} 个文件`);
-  if (commands) parts.push(`跑了 ${commands} 条命令`);
-  if (explore) parts.push(`看了 ${explore} 项`);
+  if (edits) parts.push(running && tools.some((tool) => classifyTool(tool) === "edit" && toolRunning(tool)) ? `正在改 ${edits} 个文件` : `改了 ${edits} 个文件`);
+  if (commands) parts.push(running && tools.some((tool) => classifyTool(tool) === "command" && toolRunning(tool)) ? (commands === 1 ? "正在跑命令" : `正在跑 ${commands} 条命令`) : `跑了 ${commands} 条命令`);
+  if (explore) parts.push(running && tools.some((tool) => classifyTool(tool) === "explore" && toolRunning(tool)) ? `正在看 ${explore} 项` : `看了 ${explore} 项`);
   if (!parts.length) {
     return { label: tools[0]?.title || "工具", icon: "other", stats };
   }
@@ -908,31 +908,58 @@ function runSummary(thought, tools, running) {
   let commands = 0;
   const files = new Set();
   let stats = null;
+  let editBusy = false;
+  let commandBusy = false;
+  let exploreBusy = false;
   for (const tool of tools || []) {
     const kind = classifyTool(tool);
-    if (kind === "explore") explore += 1;
-    else if (kind === "command") commands += 1;
-    else if (kind === "edit") files.add((toolPath(tool) || tool.id).toLowerCase());
+    const busy = toolRunning(tool, running);
+    if (kind === "explore") {
+      explore += 1;
+      if (busy) exploreBusy = true;
+    } else if (kind === "command") {
+      commands += 1;
+      if (busy) commandBusy = true;
+    } else if (kind === "edit") {
+      files.add((toolPath(tool) || tool.id).toLowerCase());
+      if (busy) editBusy = true;
+    }
     stats = addDiff(stats, toolDiff(tool));
   }
   const parts = [];
   if (hasThought) parts.push(running && !(tools || []).length ? "正在思考" : "思考");
-  if (files.size) parts.push(`改了 ${files.size} 个文件`);
-  if (commands) parts.push(`跑了 ${commands} 条命令`);
-  if (explore) parts.push(`看了 ${explore} 项`);
+  if (files.size) parts.push(editBusy ? `正在改 ${files.size} 个文件` : `改了 ${files.size} 个文件`);
+  if (commands) parts.push(commandBusy ? (commands === 1 ? "正在跑命令" : `正在跑 ${commands} 条命令`) : `跑了 ${commands} 条命令`);
+  if (explore) parts.push(exploreBusy ? `正在看 ${explore} 项` : `看了 ${explore} 项`);
   if (!parts.length) parts.push(running ? "正在处理" : "已处理");
   return {
-    label: `${parts.join("，")}${running ? "…" : ""}`,
+    label: `${parts.join("，")}${running && !commandBusy && !editBusy && !exploreBusy ? "…" : ""}`,
     stats,
   };
 }
 
-function messageDuration(message, running, now, turnStart) {
-  if (running) return formatDuration(now - (message.startedAt || turnStart || now));
-  return formatDuration(message.durationMs);
+function liveStatusLabel(message) {
+  const tools = message?.tools || [];
+  const commands = tools.filter((tool) => classifyTool(tool) === "command" && toolRunning(tool, true)).length;
+  if (commands === 1) return "正在跑命令";
+  if (commands > 1) return `正在跑 ${commands} 条命令`;
+  if (tools.some((tool) => toolRunning(tool, true))) return "还在处理";
+  if (String(message?.thought || "").trim() && !String(message?.text || "").trim()) return "正在想";
+  return "还在跑";
 }
 
-function RunFold({ thought, tools, cwd, running, duration }) {
+function LiveClock({ startedAt, className = "turn-time" }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+  return <span className={className}>{formatDuration(Math.max(0, now - (startedAt || now)))}</span>;
+}
+
+function RunFold({ thought, tools, cwd, running, duration, startedAt }) {
   const hasThought = Boolean(String(thought || "").trim());
   const hasTools = Boolean(tools?.length);
   if (!hasThought && !hasTools) return null;
@@ -945,7 +972,7 @@ function RunFold({ thought, tools, cwd, running, duration }) {
         </span>
         <span className="activity-label">{summary.label}</span>
         <DiffStats stats={summary.stats} />
-        {duration ? <span className="turn-time">{duration}</span> : null}
+        {running ? <LiveClock startedAt={startedAt} /> : duration ? <span className="turn-time">{duration}</span> : null}
         <span className="activity-caret">›</span>
       </summary>
       <div className="run-fold-body">
@@ -1189,6 +1216,8 @@ export function App() {
   const seenAsksRef = useRef(new Set());
   const [composerReady, setComposerReady] = useState(false);
   const composerSaveRef = useRef(null);
+  const composerSaveTimer = useRef(0);
+  const persistDraftRef = useRef(() => {});
   const composerKeyRef = useRef(null);
   const steeringStore = useRef({});
   const recoveredComposers = useRef(storedComposer());
@@ -1212,9 +1241,6 @@ export function App() {
     }
   });
   const [openProjects, setOpenProjects] = useState(readOpenProjects);
-  const [caret, setCaret] = useState(0);
-  const [suggestIndex, setSuggestIndex] = useState(0);
-  const [fileHits, setFileHits] = useState([]);
   const [showContext, setShowContext] = useState(false);
   const [showQuota, setShowQuota] = useState(false);
   const [showMode, setShowMode] = useState(false);
@@ -1240,7 +1266,8 @@ export function App() {
   const [quotaRefreshing, setQuotaRefreshing] = useState(false);
   const quotaRefreshingRef = useRef(false);
   const runningRef = useRef(new Set());
-  const [now, setNow] = useState(() => Date.now());
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const [hasDraft, setHasDraft] = useState(false);
   const inputRef = useRef(null);
   const renameRef = useRef(null);
   const skipRenameBlur = useRef(false);
@@ -1250,7 +1277,6 @@ export function App() {
   const quotaRef = useRef(null);
   const modeRef = useRef(null);
   const modelRef = useRef(null);
-  const suggestRef = useRef(null);
   const dragLive = useRef(null);
   const skipClick = useRef(false);
   const queueRef = useRef([]);
@@ -1293,6 +1319,8 @@ export function App() {
         const key = next.sessionId || `project:${next.cwd || ''}`;
         composerKeyRef.current = key;
         setDraft(draftsRef.current[key] || '');
+        setHasDraft(Boolean(String(draftsRef.current[key] || '').trim()));
+        setDraftEpoch((n) => n + 1);
         setAttachments(filesRef.current[key] || []);
         setQueue(queuesStore.current[key] || []);
         queueRef.current = queuesStore.current[key] || [];
@@ -1315,7 +1343,6 @@ export function App() {
       if (event.type === 'turn-start') {
         const turn = event.payload;
         activeTurnsRef.current = { ...activeTurnsRef.current, [turn.sessionId]: turn };
-        setNow(Date.now());
       }
       if (event.type === 'turn-end') {
         const turn = event.payload;
@@ -1455,24 +1482,13 @@ export function App() {
       if (!busy && composerKeyRef.current?.startsWith('project:') && appState.sessionId) composerKeyRef.current = key;
       else return;
     }
-    const value = { draft, attachments, queue, cwd: appState.cwd, updatedAt: Date.now() };
-    recoveredComposers.current[key] = value;
-    composerSaveRef.current = { key, value };
-    try { localStorage.setItem('halora.composer', JSON.stringify(recoveredComposers.current)); } catch {}
-    const timer = setTimeout(() => api.saveComposer?.({ key, value }).catch(e => setError(`草稿保存失败：${friendlyError(e)}`)), 250);
-    return () => { clearTimeout(timer); api.saveComposer?.({ key, value }).catch(() => {}); };
-  }, [draft, attachments, queue, appState.sessionId, appState.cwd, composerReady, busy]);
+    filesRef.current[key] = attachments;
+    persistDraftRef.current(inputRef.current?.value ?? draftsRef.current[key] ?? draft);
+  }, [attachments, queue, appState.sessionId, appState.cwd, composerReady, busy]);
   useEffect(() => {
     const flush = () => { if (composerSaveRef.current) api.saveComposerSync?.(composerSaveRef.current); };
     window.addEventListener('beforeunload', flush); return () => window.removeEventListener('beforeunload', flush);
   }, []);
-
-  useEffect(() => {
-    if (!appState.running) return undefined;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [appState.running, appState.sessionId]);
 
   const pinToBottom = () => {
     const el = scroller.current;
@@ -1541,12 +1557,10 @@ export function App() {
 
   const project = folderName(appState.cwd);
   const liveAssistant = appState.running
-    ? [...messages].reverse().find((item) => item.role === "assistant" && item.startedAt && !item.endedAt)
+    ? [...messages].reverse().find((item) => item.role === "assistant" && item.endedAt == null && item.durationMs == null)
     : null;
   const liveAssistantId = liveAssistant?.id || "";
-  const pendingDuration = appState.running
-    ? formatDuration(now - (activeTurnsRef.current[appState.sessionId]?.startedAt || now))
-    : "";
+  const liveStartedAt = liveAssistant?.startedAt || appState.activeTurns?.[appState.sessionId]?.startedAt || activeTurnsRef.current[appState.sessionId]?.startedAt || 0;
   const projects = appState.projects?.length
     ? appState.projects
     : appState.cwd
@@ -1626,7 +1640,7 @@ export function App() {
     dragLive.current = null;
     setDrag(null);
   };
-  const canSend = Boolean(appState.cwd) && (draft.trim() || attachments.length) && !busy;
+  const canSend = Boolean(appState.cwd) && (hasDraft || attachments.length) && !busy;
   const commands = useMemo(
     () => mergeCommands(appState.commands, appState.skills),
     [appState.commands, appState.skills]
@@ -1640,11 +1654,6 @@ export function App() {
       return blob.includes(q);
     });
   }, [appState.skillLibrary, skillQuery]);
-  const slash = slashQuery(draft);
-  const slashHits = slash != null ? filterCommands(commands, slash) : [];
-  const mention = mentionAt(draft, caret);
-  const menuItems = mention ? fileHits : slashHits;
-  const menuOpen = Boolean(menuItems.length);
   const context = appState.context;
   const quota = appState.quota;
   const permission = permissionItems.find(p => p.requestId === selectedPermission) || permissionItems[0];
@@ -1653,46 +1662,35 @@ export function App() {
   const currentMode = MODES.find((item) => item.id === permissionMode) || MODES[0];
   const ModeIcon = currentMode.Icon;
 
-  useEffect(() => {
-    if (!mention || !appState.cwd) {
-      setFileHits([]);
-      return;
-    }
-    let alive = true;
-    const timer = setTimeout(async () => {
-      try {
-        const rows = await api.searchFiles(mention.query, { hidden: mention.hidden });
-        if (alive) {
-          setFileHits(rows || []);
-          setSuggestIndex(0);
-        }
-      } catch {
-        if (alive) setFileHits([]);
-      }
-    }, 80);
-    return () => {
-      alive = false;
-      clearTimeout(timer);
+  const setDraftText = (text) => {
+    const key = composerKeyRef.current;
+    if (key) draftsRef.current[key] = text;
+    setDraft(text);
+    setHasDraft(Boolean(String(text || "").trim()));
+    setDraftEpoch((n) => n + 1);
+  };
+
+  persistDraftRef.current = (text) => {
+    if (!composerReady) return;
+    const key = composerKeyRef.current;
+    if (!key) return;
+    draftsRef.current[key] = text;
+    const value = {
+      draft: text,
+      attachments: filesRef.current[key] || attachments,
+      queue: queuesStore.current[key] || queueRef.current,
+      cwd: cwdRef.current,
+      updatedAt: Date.now(),
     };
-  }, [mention?.query, mention?.hidden, mention?.start, appState.cwd]);
-
-  useEffect(() => {
-    setSuggestIndex(0);
-  }, [slash, mention?.start]);
-
-  useEffect(() => {
-    const list = suggestRef.current;
-    if (!list || !menuOpen) return;
-    const item = list.children[suggestIndex];
-    if (!(item instanceof HTMLElement)) return;
-    const listRect = list.getBoundingClientRect();
-    const itemRect = item.getBoundingClientRect();
-    if (itemRect.bottom > listRect.bottom) {
-      list.scrollTop += itemRect.bottom - listRect.bottom;
-    } else if (itemRect.top < listRect.top) {
-      list.scrollTop -= listRect.top - itemRect.top;
-    }
-  }, [suggestIndex, menuOpen, menuItems.length]);
+    recoveredComposers.current[key] = value;
+    composerSaveRef.current = { key, value };
+    try { localStorage.setItem('halora.composer', JSON.stringify(recoveredComposers.current)); } catch {}
+    if (composerSaveTimer.current) clearTimeout(composerSaveTimer.current);
+    composerSaveTimer.current = window.setTimeout(() => {
+      composerSaveTimer.current = 0;
+      api.saveComposer?.({ key, value }).catch(e => setError(`草稿保存失败：${friendlyError(e)}`));
+    }, 400);
+  };
 
   useEffect(() => {
     if (!showContext) return;
@@ -1880,7 +1878,7 @@ export function App() {
 
   const parkComposer = (id) => {
     id ||= `project:${appState.cwd || ''}`;
-    draftsRef.current[id] = draft;
+    draftsRef.current[id] = inputRef.current?.value ?? draftsRef.current[id] ?? draft;
     filesRef.current[id] = attachments;
     queuesStore.current[id] = queueRef.current;
   };
@@ -1888,7 +1886,7 @@ export function App() {
   const restoreComposer = (id) => {
     id ||= `project:${appState.cwd || ''}`;
     composerKeyRef.current = id;
-    setDraft(id ? draftsRef.current[id] || "" : "");
+    setDraftText(id ? draftsRef.current[id] || "" : "");
     setAttachments(id ? filesRef.current[id] || [] : []);
     const next = id ? queuesStore.current[id] || [] : [];
     queueRef.current = next;
@@ -1999,7 +1997,7 @@ export function App() {
 
   const takeComposer = (override) => {
     const usingDraft = override == null;
-    const text = String(override ?? draft).trim();
+    const text = String(override ?? inputRef.current?.value ?? draft).trim();
     const images = usingDraft
       ? attachments
           .filter((item) => item.kind === "image")
@@ -2107,8 +2105,7 @@ export function App() {
 
   const compactChat = (hint = "") => {
     if (!appState.cwd || busy || !appState.sessionId) return;
-    setDraft("");
-    setFileHits([]);
+    setDraftText("");
     setShowContext(false);
     setShowQuota(false);
     setShowMode(false);
@@ -2130,12 +2127,12 @@ export function App() {
   const sendPrompt = async (override) => {
     if (!appState.cwd || busy) return;
     const usingDraft = override == null;
-    const parsed = parseSlash(override ?? draft);
+    const parsed = parseSlash(override ?? inputRef.current?.value ?? draft);
     if (parsed && (override != null || !attachments.length)) {
       const cmd = findCommand(commands, parsed.name);
       if (cmd?.local === "new") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         newChat();
@@ -2143,7 +2140,7 @@ export function App() {
       }
       if (cmd?.local === "rename") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         const session = allSessions.find((item) => item.id === appState.sessionId);
@@ -2158,7 +2155,7 @@ export function App() {
       }
       if (cmd?.local === "context") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         setShowContext(true);
@@ -2166,7 +2163,7 @@ export function App() {
       }
       if (cmd?.name === "compact") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         compactChat(parsed.rest);
@@ -2174,7 +2171,7 @@ export function App() {
       }
       if (cmd?.name === "always-approve") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         await changeMode(appState.permissionMode === "yolo" ? "agent" : "yolo");
@@ -2182,7 +2179,7 @@ export function App() {
       }
       if (cmd?.name === "plan") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         if (!parsed.rest) {
@@ -2195,7 +2192,7 @@ export function App() {
       }
       if (cmd?.name === "effort") {
         if (usingDraft) {
-          setDraft("");
+          setDraftText("");
           setAttachments([]);
         }
         const level = String(parsed.rest || "").trim();
@@ -2207,7 +2204,7 @@ export function App() {
         return;
       }
       if (cmd?.name === "rewind") {
-        setDraft("");
+        setDraftText("");
         openWorkbench("checkpoints");
         return;
       }
@@ -2227,10 +2224,9 @@ export function App() {
       finally { setBusy(false); }
     }
     if (usingDraft) {
-      setDraft("");
+      setDraftText("");
       setAttachments([]);
     }
-    setFileHits([]);
     setShowContext(false);
     setShowQuota(false);
     setShowMode(false);
@@ -2261,61 +2257,6 @@ export function App() {
 
   const removeQueued = (id) => {
     setQueueAndRef((prev) => prev.filter((row) => row.id !== id));
-  };
-
-  const insertMention = (hit) => {
-    if (!mention || !hit?.path) return;
-    const next = `${draft.slice(0, mention.start)}${mention.prefix}${hit.path} ${draft.slice(caret)}`;
-    const pos = mention.start + mention.prefix.length + hit.path.length + 1;
-    setDraft(next);
-    setFileHits([]);
-    setTimeout(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      el.focus();
-      el.selectionStart = el.selectionEnd = pos;
-      setCaret(pos);
-    }, 0);
-  };
-
-  const fillSlash = (cmd) => {
-    if (!cmd) return;
-    const rest = draft.replace(/^\/\S*/, "").trim();
-    const next = rest ? `/${cmd.name} ${rest}` : `/${cmd.name} `;
-    setDraft(next);
-    setSuggestIndex(0);
-    setFileHits([]);
-    setTimeout(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      el.focus();
-      el.selectionStart = el.selectionEnd = next.length;
-      setCaret(next.length);
-    }, 0);
-  };
-
-  const onKeyDown = (event) => {
-    if (menuOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-      event.preventDefault();
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      setSuggestIndex((index) => (index + delta + menuItems.length) % menuItems.length);
-      return;
-    }
-    if (menuOpen && event.key === "Escape") {
-      event.preventDefault();
-      setFileHits([]);
-      return;
-    }
-    if (menuOpen && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey))) {
-      event.preventDefault();
-      if (mention) insertMention(menuItems[suggestIndex] || menuItems[0]);
-      else fillSlash(menuItems[suggestIndex] || menuItems[0]);
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey && (prefs.sendKey !== 'ctrl-enter' || event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      send();
-    }
   };
 
   const onPaste = async (event) => {
@@ -2984,7 +2925,7 @@ export function App() {
 
       <main className="main" onContextMenu={onResourceMenu}>
         {appState.connection === 'disconnected' && <div className="recovery-bar"><span>{appState.everReady ? 'Grok 连接已断开，已保存当前对话。' : appState.grokFound ? '还没连上 Grok。' : '还没找到 Grok Build。'}</span><button className="btn ghost" onClick={() => api.reconnect().then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>重新连接</button></div>}
-        {(appState.interrupted || []).map(turn => <div className="recovery-bar" key={turn.id}><span>上次任务中断：{turn.prompt?.slice(0, 60) || (turn.compact ? '压缩对话' : '执行任务')}</span><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); }}>查看对话</button><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); setDraft('请检查上次任务的执行进度，继续完成尚未完成的部分。'); inputRef.current?.focus(); }}>准备继续</button><button className="btn ghost" onClick={() => api.dismissRecovery(turn.id).then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>忽略</button></div>)}
+        {(appState.interrupted || []).map(turn => <div className="recovery-bar" key={turn.id}><span>上次任务中断：{turn.prompt?.slice(0, 60) || (turn.compact ? '压缩对话' : '执行任务')}</span><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); }}>查看对话</button><button className="btn ghost" onClick={async () => { await loadChat(turn.id, turn.cwd); setDraftText('请检查上次任务的执行进度，继续完成尚未完成的部分。'); inputRef.current?.focus(); }}>准备继续</button><button className="btn ghost" onClick={() => api.dismissRecovery(turn.id).then(next => setAppState(p => ({ ...p, ...next }))).catch(e => setError(friendlyError(e)))}>忽略</button></div>)}
         {workbenchPage ? <Workbench key={`${workbenchPage}:${appState.cwd}:${appState.sessionId}`} page={workbenchPage} state={appState} onState={next => setAppState(p => ({ ...p, ...next }))} onClose={closeWorkbench} /> : null}
         {showSkills && !workbenchPage ? (
           <section className="skills-page">
@@ -3132,13 +3073,9 @@ export function App() {
                 ) : (
                   <article key={message.id} className="bubble assistant">
                     {(() => {
-                      const runningTurn = message.id === liveAssistantId;
-                      const duration = messageDuration(
-                        message,
-                        runningTurn,
-                        now,
-                        activeTurnsRef.current[appState.sessionId]?.startedAt
-                      );
+                      const toolsBusy = (message.tools || []).some((tool) => toolRunning(tool, message.id === liveAssistantId));
+                      const runningTurn = message.id === liveAssistantId || (appState.running && toolsBusy && message.endedAt == null);
+                      const duration = runningTurn ? "" : formatDuration(message.durationMs);
                       const folded = Boolean(String(message.thought || "").trim() || message.tools?.length);
                       return (
                         <>
@@ -3148,8 +3085,10 @@ export function App() {
                             cwd={appState.cwd}
                             running={runningTurn}
                             duration={duration}
+                            startedAt={message.startedAt || liveStartedAt}
                           />
-                          {!folded && duration ? <div className="turn-time">{duration}</div> : null}
+                          {!folded && runningTurn ? <LiveClock startedAt={message.startedAt || liveStartedAt} className="turn-time" /> : null}
+                          {!folded && !runningTurn && duration ? <div className="turn-time">{duration}</div> : null}
                         </>
                       );
                     })()}
@@ -3176,7 +3115,11 @@ export function App() {
               {compactPhase === "start" ? (
                 <div className="pulse">正在压缩</div>
               ) : appState.running && !liveAssistantId ? (
-                <div className="turn-time">{pendingDuration || "用时 0秒"}</div>
+                <div className="live-strip in-thread">
+                  <span className="live-dot" aria-hidden="true" />
+                  <span>还在跑</span>
+                  <LiveClock startedAt={liveStartedAt} />
+                </div>
               ) : null}
             </div>
 
@@ -3252,56 +3195,26 @@ export function App() {
                   ))}
                 </div>
               ) : null}
-              {menuOpen ? (
-                <div className="suggest" ref={suggestRef}>
-                  {mention
-                    ? fileHits.map((item, index) => (
-                        <button
-                          type="button"
-                          key={item.path}
-                          className={index === suggestIndex ? "active" : ""}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            insertMention(item);
-                          }}
-                        >
-                          <b>{item.name}</b>
-                          <small>{item.path}</small>
-                        </button>
-                      ))
-                    : slashHits.map((item, index) => (
-                        <button
-                          type="button"
-                          key={`${item.kind}-${item.name}`}
-                          className={index === suggestIndex ? "active" : ""}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            fillSlash(item);
-                          }}
-                        >
-                          <b>/{item.name}</b>
-                          <small>
-                            {item.kind === "skill" ? "skill · " : ""}
-                            {item.title}
-                          </small>
-                        </button>
-                      ))}
+              {appState.running ? (
+                <div className="live-strip" aria-live="polite">
+                  <span className="live-dot" aria-hidden="true" />
+                  <span>{liveStatusLabel(liveAssistant)}</span>
+                  <LiveClock startedAt={liveStartedAt} />
                 </div>
               ) : null}
               <div className="composer-card">
-                <textarea
+                <ComposerField
                   ref={inputRef}
+                  draftKey={appState.sessionId || `project:${appState.cwd || ""}`}
+                  epoch={draftEpoch}
                   value={draft}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                    setCaret(event.target.selectionStart || 0);
-                  }}
-                  onClick={(event) => setCaret(event.target.selectionStart || 0)}
-                  onKeyUp={(event) => setCaret(event.target.selectionStart || 0)}
-                  onKeyDown={onKeyDown}
-                  placeholder="想让我做什么"
-                  rows={2}
                   disabled={!appState.cwd}
+                  placeholder="想让我做什么"
+                  commands={commands}
+                  sendKey={prefs.sendKey}
+                  onPersist={(text) => persistDraftRef.current(text)}
+                  onEmptyChange={(empty) => setHasDraft(!empty)}
+                  onSend={send}
                 />
                 <div className="composer-bar">
                   {quota ? (

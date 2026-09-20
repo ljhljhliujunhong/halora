@@ -88,7 +88,7 @@ function cloneMessages(messages) {
 
 function ensureAssistant(messages) {
   const last = lastOf(messages);
-  if (last?.role === "assistant") return last;
+  if (last?.role === "assistant" && last.endedAt == null && last.durationMs == null) return last;
   const next = {
     id: `a-${messages.length}-${Date.now()}`,
     role: "assistant",

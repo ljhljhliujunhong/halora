@@ -147,11 +147,19 @@ function wrapTables(html) {
     .replaceAll("</table>", "</table></div>");
 }
 
+const htmlCache = new Map();
+
 export function renderMarkdown(text) {
   if (!text) return "";
+  const key = String(text);
+  const hit = htmlCache.get(key);
+  if (hit != null) return hit;
   try {
-    const html = marked.parse(String(text), { async: false });
-    return sanitize(wrapTables(typeof html === "string" ? html : ""));
+    const html = marked.parse(key, { async: false });
+    const out = sanitize(wrapTables(typeof html === "string" ? html : ""));
+    htmlCache.set(key, out);
+    if (htmlCache.size > 120) htmlCache.delete(htmlCache.keys().next().value);
+    return out;
   } catch {
     return "";
   }

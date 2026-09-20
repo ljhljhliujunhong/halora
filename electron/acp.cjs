@@ -12,7 +12,9 @@ class AcpClient extends EventEmitter {
     this.nextId = 0;
     this.pending = new Map();
     this.draining = new Map();
+    this.inflightTools = new Map();
     this.idleMs = 5 * 60 * 1000;
+    this.busyIdleMs = 4 * 60 * 60 * 1000;
     this.cancelGraceMs = 5000;
   }
 
@@ -34,6 +36,7 @@ class AcpClient extends EventEmitter {
 
     this.proc.stderr.on("data", (buf) => {
       this.emit("stderr", buf.toString());
+      this.touchIdle();
     });
 
     proc.on("error", (error) => {
@@ -56,6 +59,7 @@ class AcpClient extends EventEmitter {
   stop() {
     for (const finish of this.draining.values()) finish();
     this.draining.clear();
+    this.inflightTools.clear();
     if (!this.proc) return;
     const proc = this.proc;
     this.proc = null;
@@ -119,9 +123,7 @@ class AcpClient extends EventEmitter {
     }
 
     if (msg.method) {
-      for (const item of this.pending.values()) {
-        if (item.sessionId === msg.params?.sessionId) item.touch?.();
-      }
+      this.touchIdle(msg.params);
       this.emit("notification", msg.method, msg.params || {});
       return;
     }
@@ -129,6 +131,7 @@ class AcpClient extends EventEmitter {
     if (msg.id != null && this.pending.has(msg.id)) {
       const item = this.pending.get(msg.id);
       this.pending.delete(msg.id);
+      if (item.method === "session/prompt") this.inflightTools.delete(item.sessionId);
       if (msg.error) {
         item.reject(Object.assign(new Error(msg.error.message || "ACP error"), { payload: msg.error }));
       } else {
@@ -141,6 +144,65 @@ class AcpClient extends EventEmitter {
   pendingSessionId() {
     for (const item of this.pending.values()) if (item.sessionId) return item.sessionId;
     return "";
+  }
+
+  sessionUpdateOf(params) {
+    if (!params || typeof params !== "object") return {};
+    if (params.update && typeof params.update === "object") return params.update;
+    return params;
+  }
+
+  noteTools(sessionId, update) {
+    if (!sessionId) return;
+    const kind = String(update?.sessionUpdate || "");
+    if (kind !== "tool_call" && kind !== "tool_call_update") return;
+    const toolId = update.toolCallId || update.tool_call_id;
+    if (!toolId) return;
+    let open = this.inflightTools.get(sessionId);
+    if (!open) {
+      open = new Set();
+      this.inflightTools.set(sessionId, open);
+    }
+    const status = String(update.status || "").toLowerCase();
+    const done = ["completed", "failed", "error", "cancelled", "canceled"].includes(status);
+    if (done) open.delete(toolId);
+    else open.add(toolId);
+    if (!open.size) this.inflightTools.delete(sessionId);
+  }
+
+  sessionIdleMs(sessionId) {
+    if (sessionId && this.inflightTools.get(sessionId)?.size) return this.busyIdleMs;
+    return this.idleMs;
+  }
+
+  touchIdle(params) {
+    const sid = incomingSessionId(params, this.pendingSessionId());
+    if (params) this.noteTools(sid, this.sessionUpdateOf(params));
+    const wait = this.sessionIdleMs(sid);
+    for (const item of this.pending.values()) {
+      if (!item.touch) continue;
+      if (sid && item.sessionId && item.sessionId !== sid) continue;
+      item.touch(wait);
+    }
+  }
+
+  beginDrain(id, sessionId, reason) {
+    let resolve;
+    const done = new Promise((r) => { resolve = r; });
+    const finish = () => {
+      clearTimeout(timer);
+      this.draining.delete(id);
+      resolve();
+      this.emit("settled", sessionId);
+    };
+    finish.done = done;
+    finish.sessionId = sessionId;
+    const timer = setTimeout(() => {
+      this.stop();
+      this.emit("exit", reason);
+    }, this.cancelGraceMs);
+    this.draining.set(id, finish);
+    return finish;
   }
 
   handleIncoming(msg) {
@@ -182,10 +244,23 @@ class AcpClient extends EventEmitter {
       const touch = (ms = timeoutMs) => {
         clearTimeout(timer);
         if (ms > 0) timer = setTimeout(() => {
-              if (this.pending.has(id)) {
-                this.pending.delete(id);
-                reject(new Error(`${method} 超时`));
-                if (idle) { this.stop(); this.emit('exit', 'timeout'); }
+              if (!this.pending.has(id)) return;
+              const current = this.pending.get(id);
+              if (idle && current?.sessionId && this.inflightTools.get(current.sessionId)?.size) {
+                touch(this.busyIdleMs);
+                return;
+              }
+              this.pending.delete(id);
+              if (current?.sessionId) this.inflightTools.delete(current.sessionId);
+              reject(new Error(`${method} 超时`));
+              if (idle) {
+                const sessionId = current?.sessionId;
+                if (sessionId) {
+                  try {
+                    this.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+                  } catch {}
+                }
+                this.beginDrain(id, sessionId, "timeout");
               }
             }, ms);
       };
@@ -339,16 +414,12 @@ class AcpClient extends EventEmitter {
       method: "session/cancel",
       params: { sessionId },
     });
+    this.inflightTools.delete(sessionId);
     for (const [id, item] of this.pending) {
       if (item.sessionId !== sessionId || item.method !== 'session/prompt') continue;
       this.pending.delete(id);
       item.reject(new Error('任务已取消'));
-      let resolve;
-      const done = new Promise(r => { resolve = r; });
-      const finish = () => { clearTimeout(timer); this.draining.delete(id); resolve(); this.emit('settled', sessionId); };
-      finish.done = done; finish.sessionId = sessionId;
-      const timer = setTimeout(() => { this.stop(); this.emit('exit', 'cancel-timeout'); }, this.cancelGraceMs);
-      this.draining.set(id, finish);
+      this.beginDrain(id, sessionId, "cancel-timeout");
     }
   }
 }

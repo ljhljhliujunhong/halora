@@ -35,13 +35,41 @@ test('cancel settles the prompt and waits for acknowledgement before the next pr
   c.onLine(JSON.stringify({ id, result: {} })); await new Promise(r => setImmediate(r));
   const nextId = c.sent.at(-1).id; c.onLine(JSON.stringify({ id: nextId, result: {} })); await next; c.stop();
 });
+test('idle timeout cancels the prompt without immediately killing Grok', async () => {
+  const c = client(); c.idleMs = 20; c.cancelGraceMs = 60_000;
+  await assert.rejects(c.prompt('a', 'hello'), /超时/);
+  assert.equal(c.alive, true);
+  assert.ok(c.sent.some(m => m.method === 'session/cancel'));
+  c.stop();
+});
 test('idle and unacknowledged cancellation disconnect instead of locking the queue forever', async () => {
-  const c = client(); c.idleMs = 20;
-  await assert.rejects(c.prompt('a', 'hello'), /超时/); assert.equal(c.alive, false);
   const d = client(); d.cancelGraceMs = 20;
   const p = d.prompt('a', 'first'); const rejected = assert.rejects(p, /取消/);
   await new Promise(r => setImmediate(r)); d.cancel('a'); await rejected;
   await assert.rejects(d.prompt('a', 'next'), /没连上/); assert.equal(d.draining.size, 0);
+});
+test('running tools keep a prompt alive past the quiet idle window', async () => {
+  const c = client(); c.idleMs = 40; c.busyIdleMs = 250; c.cancelGraceMs = 60_000;
+  const pending = c.prompt('a', 'hello');
+  await new Promise(r => setImmediate(r));
+  c.onLine(JSON.stringify({ method: 'session/update', params: { session_id: 'a', update: { sessionUpdate: 'tool_call', toolCallId: 't1', status: 'in_progress' } } }));
+  await new Promise(r => setTimeout(r, 80));
+  assert.equal(c.pending.size, 1);
+  c.onLine(JSON.stringify({ jsonrpc: '2.0', id: c.sent[0].id, result: {} }));
+  await pending;
+  c.stop();
+});
+test('session updates without sessionId still reset the idle timer', async () => {
+  const c = client(); c.idleMs = 50; c.cancelGraceMs = 60_000;
+  const pending = c.prompt('a', 'hello');
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setTimeout(r, 20));
+  c.onLine(JSON.stringify({ method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'x' } } } }));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(c.pending.size, 1);
+  c.onLine(JSON.stringify({ jsonrpc: '2.0', id: c.sent[0].id, result: {} }));
+  await pending;
+  c.stop();
 });
 test('repeated turns and complete tool output survive history loading and export', () => {
   const cwd = path.join(root, 'history'), id = 'chat';
