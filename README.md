@@ -132,3 +132,7 @@ GrokBuild/
 ## 产品说明
 
 这不是 xAI 官方产品。会话、登录、模型都走你本机的 `grok`。
+
+## Cloud Agent connectivity check
+
+Cloud Agent smoke check on 2026-09-17. No product change.
