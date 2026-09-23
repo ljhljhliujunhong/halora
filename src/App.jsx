@@ -1291,6 +1291,7 @@ export function App() {
   const quotaRef = useRef(null);
   const modeRef = useRef(null);
   const modelRef = useRef(null);
+  const modelBySessionRef = useRef({});
   const dragLive = useRef(null);
   const skipClick = useRef(false);
   const queueRef = useRef([]);
@@ -1349,7 +1350,12 @@ export function App() {
     off = api.onEvent((event) => {
       if (event.type === "state") {
         if (event.payload.activeTurns) activeTurnsRef.current = event.payload.activeTurns;
-        setAppState((prev) => ({ ...prev, ...event.payload }));
+        setAppState((prev) => {
+          const incoming = event.payload || {};
+          const sid = incoming.sessionId || prev.sessionId;
+          const picked = sid ? modelBySessionRef.current[sid] : "";
+          return { ...prev, ...incoming, modelId: picked || incoming.modelId || prev.modelId };
+        });
         if (typeof event.payload?.sidebarCollapsed === "boolean") {
           setCollapsed(event.payload.sidebarCollapsed);
         }
@@ -2011,11 +2017,17 @@ export function App() {
     stickBottom.current = true;
     pinLock.current = Date.now() + 800;
     parkComposer(appState.sessionId);
+    const picked = modelBySessionRef.current[id];
+    if (picked) setAppState((prev) => ({ ...prev, modelId: picked }));
     setBusy(true);
     try {
       const next = await api.loadChat(id, cwd);
       restoreComposer(id);
-      setAppState((prev) => ({ ...prev, ...next }));
+      setAppState((prev) => ({
+        ...prev,
+        ...next,
+        modelId: modelBySessionRef.current[id] || next.modelId || prev.modelId,
+      }));
       if (cwd) setProjectOpen(cwd, true);
     } catch (err) {
       setError(friendlyError(err));
@@ -2560,11 +2572,26 @@ export function App() {
 
   const changeModel = async (id) => {
     setShowModel(false);
-    if (!id || id === appState.modelId) return;
+    const sid = appState.sessionId;
+    const current = (sid && modelBySessionRef.current[sid]) || appState.modelId;
+    if (!id || id === current) return;
+    const previousPick = sid ? modelBySessionRef.current[sid] : "";
+    if (sid) modelBySessionRef.current[sid] = id;
+    setAppState((prev) => ({ ...prev, modelId: id }));
     try {
       const next = await api.setModel(id);
-      setAppState((prev) => ({ ...prev, ...next }));
+      if (next.sessionId && next.sessionId !== sessionIdRef.current) return;
+      setAppState((prev) => ({
+        ...prev,
+        ...next,
+        modelId: (sid && modelBySessionRef.current[sid]) || next.modelId || prev.modelId,
+      }));
     } catch (err) {
+      if (sid) {
+        if (previousPick) modelBySessionRef.current[sid] = previousPick;
+        else delete modelBySessionRef.current[sid];
+      }
+      setAppState((prev) => ({ ...prev, modelId: previousPick || prev.modelId }));
       setError(friendlyError(err));
     }
   };
@@ -2597,8 +2624,10 @@ export function App() {
     : appState.modelId
       ? [{ id: appState.modelId, name: appState.modelId }]
       : [];
+  const viewedModelId =
+    (appState.sessionId && modelBySessionRef.current[appState.sessionId]) || appState.modelId;
   const currentModel =
-    modelList.find((model) => model.id === appState.modelId) || modelList[0] || null;
+    modelList.find((model) => model.id === viewedModelId) || modelList[0] || null;
   const effort = appState.effort;
   const effortOptions = effort?.options || [];
   const effortCurrent = showModel && effortDraft ? effortDraft : (effort?.current || "");
@@ -2657,11 +2686,11 @@ export function App() {
                 <button
                   type="button"
                   key={model.id}
-                  className={`model-item ${model.id === appState.modelId ? "active" : ""}`}
+                  className={`model-item ${model.id === viewedModelId ? "active" : ""}`}
                   onClick={() => changeModel(model.id)}
                 >
                   <span>{model.name || model.id}</span>
-                  <span className="mode-check">{model.id === appState.modelId ? "✓" : ""}</span>
+                  <span className="mode-check">{model.id === viewedModelId ? "✓" : ""}</span>
                 </button>
               ))}
             </div>

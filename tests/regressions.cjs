@@ -298,6 +298,58 @@ test("switching chats keeps the other session running and accepts a second promp
   assert.equal(h.snapshot().runningIds.length, 0);
 });
 
+test("settings default model wins on open; a manual pick lasts only this run", async () => {
+  const a = fixture("model-a", "chat-a");
+  const b = fixture("model-b", "chat-b");
+  writeJson(path.join(a.dir, "summary.json"), { ...a.summary, current_model_id: "grok-4.6" });
+  writeJson(path.join(b.dir, "summary.json"), { ...b.summary, current_model_id: "grok-4.7" });
+  const h = mainHarness();
+  h.saveSettings({ modelId: "grok-4.7-fastest" });
+  h.acp.models = [];
+  h.acp.setModel = async (sessionId, modelId) => {
+    h.acp.models.push([sessionId, modelId]);
+  };
+  h.acp.loadSession = async (id) => {
+    h.acp.loads.push(id);
+    return {
+      models: {
+        currentModelId: id === a.id ? "grok-4.6" : "grok-4.7",
+        availableModels: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          { modelId: "grok-4.7", name: "Grok 4.7" },
+          { modelId: "grok-4.7-fastest", name: "Grok 4.7 Fastest" },
+        ],
+      },
+    };
+  };
+
+  await h.handlers.get("load-chat")(null, { cwd: a.cwd, id: a.id });
+  assert.equal(h.snapshot().modelId, "grok-4.7-fastest");
+  await h.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
+  assert.equal(h.snapshot().modelId, "grok-4.7-fastest");
+
+  await h.handlers.get("set-model")(null, "grok-4.6");
+  assert.equal(h.snapshot().modelId, "grok-4.6");
+  await h.handlers.get("load-chat")(null, { cwd: a.cwd, id: a.id });
+  assert.equal(h.snapshot().modelId, "grok-4.7-fastest");
+  await h.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
+  assert.equal(h.snapshot().modelId, "grok-4.6");
+
+  h.acp.emit("notification", "_x.ai/models/update", {
+    sessionId: a.id,
+    currentModelId: "grok-4.6",
+  });
+  assert.equal(h.snapshot().modelId, "grok-4.6");
+  h.acp.emit("notification", "_x.ai/models/update", { currentModelId: "grok-4.7" });
+  assert.equal(h.snapshot().modelId, "grok-4.6");
+
+  const restarted = mainHarness();
+  restarted.saveSettings({ modelId: "grok-4.7-fastest", lastCwd: b.cwd, lastSessionId: b.id });
+  restarted.state.cwd = b.cwd;
+  const opened = await restarted.handlers.get("get-state")();
+  assert.equal(opened.modelId, "grok-4.7-fastest");
+});
+
 test('disconnect preserves interrupted turns and accepted queue items across restart', async () => {
   const f = fixture('recovery', 'recover'); const h = mainHarness(); h.state.cwd=f.cwd; h.state.sessionId=f.id;
   h.beginTurn(f.id, f.cwd, {user:'finish work',itemId:'already-sent'});

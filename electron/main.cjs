@@ -138,7 +138,7 @@ function liveSlot(id, cwd) {
   if (!id) return null;
   let slot = live.get(id);
   if (!slot) {
-    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false };
+    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false, modelId: "" };
     live.set(id, slot);
   } else if (cwd) {
     slot.cwd = cwd;
@@ -315,7 +315,7 @@ async function attachSession(id, cwd, options = {}) {
   slot.attached = true;
   slot.cwd = cwd || slot.cwd;
   slot.grokPlan = planModeActive(slot.cwd, id);
-  applyInit(loaded || {});
+  applyInit(loaded || {}, id);
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
   await applyPreferredEffort(id);
   if (!options.skipModel) await applySessionModel(id);
@@ -335,46 +335,42 @@ function saveSettings(patch) {
   writeJson(settingsPath(), next);
 }
 
-function sessionModels() {
-  const raw = loadSettings().sessionModels;
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-}
-
-function sessionModelOf(id) {
-  const value = id ? sessionModels()[id] : "";
+function normalizeModelId(value) {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 100) : "";
 }
 
-function modelOnDisk(cwd, id) {
-  try {
-    const dir = sessionDir(cwd, id);
-    if (!dir) return "";
-    const summary = JSON.parse(fs.readFileSync(path.join(dir, "summary.json"), "utf8"));
-    return typeof summary.current_model_id === "string" ? summary.current_model_id.trim().slice(0, 100) : "";
-  } catch {
-    return "";
-  }
+function defaultModelId() {
+  return normalizeModelId(loadSettings().modelId) || "grok-4.6";
+}
+
+function sessionModelOf(id) {
+  return normalizeModelId(live.get(id)?.modelId);
 }
 
 function rememberSessionModel(id, modelId) {
-  if (!id || typeof modelId !== "string" || !modelId.trim()) return;
-  const next = { ...sessionModels(), [id]: modelId.trim().slice(0, 100) };
-  const ids = Object.keys(next);
-  if (ids.length > 300) {
-    for (const old of ids.slice(0, ids.length - 300)) delete next[old];
-  }
-  saveSettings({ sessionModels: next });
+  const value = normalizeModelId(modelId);
+  if (!id || !value) return;
+  const slot = liveSlot(id);
+  if (slot) slot.modelId = value;
+}
+
+function forgetSessionModel(id) {
+  const slot = live.get(id);
+  if (slot) slot.modelId = "";
+}
+
+function resolvedSessionModel(id) {
+  return sessionModelOf(id) || defaultModelId();
 }
 
 async function applySessionModel(id) {
-  const want = sessionModelOf(id);
-  if (!want) return;
-  state.modelId = want;
-  if (!acp.alive) return;
+  const want = resolvedSessionModel(id);
+  if (id === state.sessionId) state.modelId = want;
+  if (!acp.alive || !want) return;
   try {
     await acp.setModel(id, want);
   } catch {
-    // Keep the remembered choice visible; the next open can try again.
+    // Keep the chosen model visible; the next open can try again.
   }
 }
 
@@ -728,10 +724,11 @@ function seedEffortFromDisk(cwd, id) {
   }
 }
 
-function applyInit(result) {
+function applyInit(result, sessionId = "") {
   const models =
     result?._meta?.modelState?.availableModels ||
     result?.models?.availableModels ||
+    result?.availableModels ||
     [];
   if (models.length) {
     state.models = models.map((m) => ({
@@ -739,10 +736,7 @@ function applyInit(result) {
       name: m.name || m.modelId,
     }));
   }
-  state.modelId =
-    result?._meta?.modelState?.currentModelId ||
-    result?.models?.currentModelId ||
-    state.modelId;
+  if (sessionId && sessionId === state.sessionId) state.modelId = resolvedSessionModel(sessionId);
   const commands = result?._meta?.availableCommands || result?.availableCommands;
   if (commands) applyCommands(commands);
   applyConfig(result);
@@ -791,7 +785,7 @@ async function ensureAgent() {
 async function createSession() {
   await ensureAgent();
   if (!state.cwd) throw new Error("先打开一个文件夹");
-  const preferred = loadSettings().modelId || state.modelId;
+  const preferred = defaultModelId();
   const created = await acp.newSession(state.cwd, state.permissionMode);
   state.sessionId = created.sessionId;
   saveSettings({ lastSessionId: state.sessionId });
@@ -800,12 +794,11 @@ async function createSession() {
   slot.grokYolo = state.permissionMode === "yolo";
   slot.grokPlan = false;
   await syncSessionMode(created.sessionId);
-  applyInit(created);
+  applyInit(created, created.sessionId);
   if (preferred) {
     try {
       await acp.setModel(state.sessionId, preferred);
       state.modelId = preferred;
-      rememberSessionModel(state.sessionId, preferred);
     } catch {
       // keep going with the default
     }
@@ -1001,13 +994,10 @@ acp.on("notification", (method, params) => {
     return;
   }
   if (method === "_x.ai/models/update") {
-    applyInit({ _meta: { modelState: params } });
-    const want = sessionModelOf(state.sessionId);
-    if (want && want !== state.modelId) {
-      state.modelId = want;
-      const id = state.sessionId;
-      acp.setModel(id, want).catch(() => {});
-    }
+    const sessionId = String(params?.sessionId || params?.session_id || "");
+    applyInit({ _meta: { modelState: params } }, sessionId);
+    if (sessionId && sessionId !== state.sessionId) return;
+    if (state.sessionId) state.modelId = resolvedSessionModel(state.sessionId);
     send("state", snapshot());
   }
 });
@@ -1184,12 +1174,7 @@ ipcMain.handle("get-state", async () => {
       refreshSkills();
     }
   }
-  const opening = settings.lastSessionId;
-  const rememberedModel = sessionModelOf(opening);
-  const diskModel = rememberedModel ? "" : modelOnDisk(state.cwd, opening);
-  if (rememberedModel) state.modelId = rememberedModel;
-  else if (diskModel) state.modelId = diskModel;
-  else if (settings.modelId) state.modelId = settings.modelId;
+  state.modelId = defaultModelId();
   if (["agent", "plan", "yolo"].includes(settings.permissionMode)) {
     state.permissionMode = settings.permissionMode;
   }
@@ -1274,15 +1259,10 @@ ipcMain.handle("load-chat", async (_event, payload) => {
       try {
         await attachSession(id, state.cwd);
       } catch {
-        const recorded = modelOnDisk(state.cwd, id);
-        if (recorded) state.modelId = recorded;
+        if (id === state.sessionId) state.modelId = resolvedSessionModel(id);
       }
     } else {
       await applySessionModel(id);
-      if (!sessionModelOf(id)) {
-        const recorded = modelOnDisk(state.cwd, id);
-        if (recorded) state.modelId = recorded;
-      }
     }
     await applyPreferredEffort(id);
     refreshSessions();
@@ -1684,20 +1664,24 @@ ipcMain.handle("cancel", async (_event, sessionId) => {
 ipcMain.handle("set-model", async (_event, modelId) => {
   const sessionId = state.sessionId;
   const cwd = cwdOfSession(sessionId) || state.cwd;
-  const previous = state.modelId;
-  if (sessionId && cwd) {
+  const previous = sessionModelOf(sessionId);
+  const nextId = normalizeModelId(modelId);
+  if (sessionId && nextId) rememberSessionModel(sessionId, nextId);
+  if (sessionId && sessionId === state.sessionId && nextId) state.modelId = nextId;
+  if (sessionId && cwd && nextId) {
     try {
       await attachSession(sessionId, cwd, { skipModel: true });
-      await acp.setModel(sessionId, modelId);
+      await acp.setModel(sessionId, nextId);
       await applyPreferredEffort(sessionId);
     } catch (err) {
-      state.modelId = previous;
+      if (previous) rememberSessionModel(sessionId, previous);
+      else forgetSessionModel(sessionId);
+      if (state.sessionId === sessionId) state.modelId = previous || defaultModelId();
       send("state", snapshot());
       throw err;
     }
-    rememberSessionModel(sessionId, modelId);
   }
-  state.modelId = modelId;
+  if (state.sessionId === sessionId && nextId) state.modelId = nextId;
   send("state", snapshot());
   return snapshot();
 });
@@ -1912,6 +1896,15 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
   const id = state.sessionId;
   const slot = id && live.get(id);
   if (slot?.attached && !slot.running) await syncSessionMode(id);
+  if (next.modelId !== old.modelId) {
+    const id = state.sessionId;
+    if (!id || !sessionModelOf(id)) {
+      state.modelId = next.modelId;
+      if (id && acp.alive) {
+        try { await acp.setModel(id, next.modelId); } catch { /* keep the new default visible */ }
+      }
+    }
+  }
   if (next.effort && next.effort !== old.effort) {
     const want = resolvedEffort(next.effort);
     if (state.effort) state.effort = { ...state.effort, current: want };
@@ -1936,8 +1929,6 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
     state.settingsWarning = 'Halora 设置已保存；Grok 压缩配置写入失败：' + error.message;
     diagnostics.log(app.getPath('userData'), 'save-config', error);
   }
-  // The preference is a default for new sessions. The current model selector
-  // is the only action that changes an existing session's model.
   refreshContext(); send('state', snapshot()); return snapshot();
 });
 ipcMain.handle('review', (_event, cwd) => reviewService.review(cwd || state.cwd));
