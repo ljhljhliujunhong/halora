@@ -1,0 +1,10 @@
+---
+description: After app code changes, immediately pack and sync the root 星环.exe
+alwaysApply: true
+---
+
+# 同步根目录 exe
+
+改完界面、图标、主进程或任何会进应用的代码后，必须立刻 `npm run pack`，把根目录 `星环.exe` 和 `runtime/app` 同步成最新版。只改源码不打包，双击 exe 仍是旧程序。
+
+不要等用户再问一次。打包输出在 `E:/VsCodeProject/Agent缓存文件/halora-release`。应用若正在运行，打包脚本会让它退出后再替换并重启。
