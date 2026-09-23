@@ -383,6 +383,21 @@ function IconPencil() {
   );
 }
 
+function IconJumpDown() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path
+        d="M12 4.5v12.2M7.2 12.4 12 17.2l4.8-4.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.15"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function IconChevron({ left, down }) {
   const d = left ? "M15 6l-6 6 6 6" : down ? "M6 9l6 6 6-6" : "M9 6l6 6-6 6";
   return (
@@ -1251,6 +1266,7 @@ export function App() {
   const [compactPhases, setCompactPhases] = useState({});
   const scroller = useRef(null);
   const stickBottom = useRef(true);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const pinLock = useRef(0);
   const parkedRef = useRef(false);
   const scrollPos = useRef(0);
@@ -1494,6 +1510,21 @@ export function App() {
     pinLock.current = Math.max(pinLock.current, Date.now() + 80);
     el.scrollTop = el.scrollHeight;
   };
+
+  const jumpToBottom = () => {
+    const el = scroller.current;
+    stickBottom.current = true;
+    if (!el) {
+      setAwayFromBottom(false);
+      return;
+    }
+    pinLock.current = Math.max(pinLock.current, Date.now() + 900);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    setAwayFromBottom(false);
+  }, [appState.sessionId]);
 
   const saveThreadScroll = () => {
     const el = scroller.current;
@@ -3011,11 +3042,18 @@ export function App() {
               className="thread"
               ref={scroller}
               onScroll={(event) => {
-                if (parkedRef.current || Date.now() < pinLock.current) return;
                 const el = event.currentTarget;
+                if (parkedRef.current) return;
+                const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+                const atBottom = gap < 96;
+                const away = !atBottom && el.scrollHeight > el.clientHeight + 48;
+                if (Date.now() < pinLock.current) {
+                  if (!away) setAwayFromBottom(false);
+                  return;
+                }
+                setAwayFromBottom(away);
                 if (el.clientHeight < 32) return;
-                stickBottom.current =
-                  el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+                stickBottom.current = atBottom;
               }}
             >
               <div className="thread-content">
@@ -3195,6 +3233,12 @@ export function App() {
                   <span>{liveStatusLabel(liveAssistant)}</span>
                   <LiveClock startedAt={liveStartedAt} />
                 </div>
+              ) : null}
+              <div className="composer-anchor">
+              {awayFromBottom ? (
+                <button type="button" className="jump-bottom" aria-label="回到底部" onMouseDown={(event) => event.preventDefault()} onClick={jumpToBottom}>
+                  <IconJumpDown />
+                </button>
               ) : null}
               <div className="composer-card">
                 <ComposerField
@@ -3385,6 +3429,7 @@ export function App() {
                     <IconSend />
                   </button>
                 </div>
+              </div>
               </div>
             </form>
           </>

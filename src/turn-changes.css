@@ -114,11 +114,11 @@
 .app[data-theme=dark] .change-drawer,
 .app[data-theme=dark] .change-drawer-body,
 .app[data-theme=dark] .change-drawer .wb-patch {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 .app[data-theme=dark] .change-drawer::-webkit-scrollbar-thumb,
 .app[data-theme=dark] .change-drawer-body::-webkit-scrollbar-thumb,
 .app[data-theme=dark] .change-drawer .wb-patch::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--scroll-thumb);
   background-clip: padding-box;
 }

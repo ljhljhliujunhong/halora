@@ -18,6 +18,8 @@
   --btn-danger-fill: #F58B86;
   --btn-danger-hover: #EF7670;
   --btn-danger-text: #ffffff;
+  --scroll-thumb: rgba(28, 48, 78, 0.30);
+  --scroll-thumb-hover: rgba(28, 48, 78, 0.46);
   --shadow: 0 14px 36px rgba(20, 40, 70, 0.08);
   --panel-duration: 560ms;
   --panel-ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -32,7 +34,7 @@
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: rgba(28, 48, 78, 0.18) transparent;
+  scrollbar-color: var(--scroll-thumb, rgba(28, 48, 78, 0.30)) transparent;
 }
 
 html,
@@ -960,6 +962,16 @@ select {
   padding: 28px 0 16px;
   display: flex;
   flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb, rgba(28, 48, 78, 0.30)) transparent;
+}
+
+.thread::-webkit-scrollbar {
+  width: 10px;
+}
+
+.thread::-webkit-scrollbar-thumb {
+  min-height: 64px;
 }
 
 /* Measure against the chat pane, so a transcript scrollbar cannot shift the
@@ -1431,6 +1443,61 @@ select {
 .composer-wrap.drag .composer-card {
   outline: 1px dashed var(--gold);
   outline-offset: 4px;
+}
+
+.composer-anchor {
+  position: relative;
+}
+
+.jump-bottom,
+.jump-bottom:hover,
+.jump-bottom:active,
+.jump-bottom:focus,
+.jump-bottom:focus-visible {
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  position: absolute;
+  left: 50%;
+  top: 0;
+  z-index: 6;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: #3a4654;
+  cursor: pointer;
+  outline: none;
+  transform: translate(-50%, calc(-50% - 10px));
+  background-color: #ffffff;
+  background-image: linear-gradient(180deg, rgba(255,255,255,.7), rgba(220, 232, 255, .35) 46%, rgba(255,255,255,0));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.9),
+    0 0 0 1px rgba(150, 152, 156, 0.22),
+    0 10px 24px rgba(40, 55, 70, 0.14);
+}
+
+.jump-bottom svg {
+  display: block;
+  translate: 0 1px;
+}
+
+.app[data-theme=dark] .jump-bottom,
+.app[data-theme=dark] .jump-bottom:hover,
+.app[data-theme=dark] .jump-bottom:active,
+.app[data-theme=dark] .jump-bottom:focus,
+.app[data-theme=dark] .jump-bottom:focus-visible {
+  color: #e8eaef;
+  border-color: rgba(255, 255, 255, 0.14);
+  background-color: #1c1e24;
+  background-image: linear-gradient(180deg, rgba(255,255,255,.14), rgba(147, 180, 255, .08) 48%, rgba(255,255,255,0));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.16),
+    0 0 0 1px rgba(255,255,255,.10),
+    0 12px 28px rgba(0, 0, 0, 0.42);
 }
 
 .queue {
@@ -1935,27 +2002,28 @@ select {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(28, 48, 78, 0.16);
+  min-height: 48px;
+  background: var(--scroll-thumb, rgba(28, 48, 78, 0.30));
   border-radius: 99px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(28, 48, 78, 0.28);
+  background: var(--scroll-thumb-hover, rgba(28, 48, 78, 0.46));
   background-clip: padding-box;
   border: 2px solid transparent;
 }
 
 .app[data-theme=dark] {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 .app[data-theme=dark] ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--scroll-thumb);
   background-clip: padding-box;
 }
 .app[data-theme=dark] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  background: var(--scroll-thumb-hover);
   background-clip: padding-box;
 }
 
@@ -2325,6 +2393,8 @@ select {
   --glass-float: 0 8px 18px rgba(40, 90, 110, 0.10);
   --glass-drop: 0 18px 44px -12px rgba(40, 55, 70, 0.12);
   --overlay-fill: #ffffff;
+  --scroll-thumb: rgba(28, 48, 78, 0.30);
+  --scroll-thumb-hover: rgba(28, 48, 78, 0.46);
   --shadow: var(--glass-edge), var(--glass-bloom);
   background:
     radial-gradient(ellipse at 0% 6%, rgba(160, 176, 188, 0.10), transparent 42%),
@@ -2349,7 +2419,8 @@ select {
   --line: rgba(255, 255, 255, 0.08);
   --ring-track: #2a2d36;
   --ring-progress: #60A5FA;
-  --scroll-thumb: #6b7180;
+  --scroll-thumb: rgba(198, 204, 216, 0.62);
+  --scroll-thumb-hover: rgba(224, 228, 236, 0.88);
   --glass-edge:
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 0 0 1px rgba(255, 255, 255, 0.05);
@@ -2374,7 +2445,7 @@ select {
 }
 
 .app[data-theme=dark] {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
   background:
     radial-gradient(ellipse at 0% 6%, rgba(90, 100, 120, 0.16), transparent 42%),
     radial-gradient(ellipse at 96% 4%, rgba(110, 96, 150, 0.10), transparent 36%),

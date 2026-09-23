@@ -304,10 +304,13 @@ function resetLive(keepIds = false) {
   if (!keepIds) live.clear();
 }
 
-async function attachSession(id, cwd) {
+async function attachSession(id, cwd, options = {}) {
   await ensureAgent();
   const slot = liveSlot(id, cwd);
-  if (slot.attached && acp.alive) return null;
+  if (slot.attached && acp.alive) {
+    if (!options.skipModel) await applySessionModel(id);
+    return null;
+  }
   const loaded = await acp.loadSession(id, cwd);
   slot.attached = true;
   slot.cwd = cwd || slot.cwd;
@@ -315,6 +318,7 @@ async function attachSession(id, cwd) {
   applyInit(loaded || {});
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
   await applyPreferredEffort(id);
+  if (!options.skipModel) await applySessionModel(id);
   return loaded;
 }
 
@@ -329,6 +333,49 @@ function loadSettings() {
 function saveSettings(patch) {
   const next = { ...loadSettings(), ...patch };
   writeJson(settingsPath(), next);
+}
+
+function sessionModels() {
+  const raw = loadSettings().sessionModels;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+function sessionModelOf(id) {
+  const value = id ? sessionModels()[id] : "";
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 100) : "";
+}
+
+function modelOnDisk(cwd, id) {
+  try {
+    const dir = sessionDir(cwd, id);
+    if (!dir) return "";
+    const summary = JSON.parse(fs.readFileSync(path.join(dir, "summary.json"), "utf8"));
+    return typeof summary.current_model_id === "string" ? summary.current_model_id.trim().slice(0, 100) : "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberSessionModel(id, modelId) {
+  if (!id || typeof modelId !== "string" || !modelId.trim()) return;
+  const next = { ...sessionModels(), [id]: modelId.trim().slice(0, 100) };
+  const ids = Object.keys(next);
+  if (ids.length > 300) {
+    for (const old of ids.slice(0, ids.length - 300)) delete next[old];
+  }
+  saveSettings({ sessionModels: next });
+}
+
+async function applySessionModel(id) {
+  const want = sessionModelOf(id);
+  if (!want) return;
+  state.modelId = want;
+  if (!acp.alive) return;
+  try {
+    await acp.setModel(id, want);
+  } catch {
+    // Keep the remembered choice visible; the next open can try again.
+  }
 }
 
 function moveToFront(list, value) {
@@ -758,6 +805,7 @@ async function createSession() {
     try {
       await acp.setModel(state.sessionId, preferred);
       state.modelId = preferred;
+      rememberSessionModel(state.sessionId, preferred);
     } catch {
       // keep going with the default
     }
@@ -954,6 +1002,12 @@ acp.on("notification", (method, params) => {
   }
   if (method === "_x.ai/models/update") {
     applyInit({ _meta: { modelState: params } });
+    const want = sessionModelOf(state.sessionId);
+    if (want && want !== state.modelId) {
+      state.modelId = want;
+      const id = state.sessionId;
+      acp.setModel(id, want).catch(() => {});
+    }
     send("state", snapshot());
   }
 });
@@ -1130,7 +1184,12 @@ ipcMain.handle("get-state", async () => {
       refreshSkills();
     }
   }
-  if (settings.modelId) state.modelId = settings.modelId;
+  const opening = settings.lastSessionId;
+  const rememberedModel = sessionModelOf(opening);
+  const diskModel = rememberedModel ? "" : modelOnDisk(state.cwd, opening);
+  if (rememberedModel) state.modelId = rememberedModel;
+  else if (diskModel) state.modelId = diskModel;
+  else if (settings.modelId) state.modelId = settings.modelId;
   if (["agent", "plan", "yolo"].includes(settings.permissionMode)) {
     state.permissionMode = settings.permissionMode;
   }
@@ -1213,10 +1272,16 @@ ipcMain.handle("load-chat", async (_event, payload) => {
     const slot = liveSlot(id, state.cwd);
     if (!slot.attached) {
       try {
-        const loaded = await attachSession(id, state.cwd);
-        applyInit(loaded || {});
+        await attachSession(id, state.cwd);
       } catch {
-        // still show the saved chat
+        const recorded = modelOnDisk(state.cwd, id);
+        if (recorded) state.modelId = recorded;
+      }
+    } else {
+      await applySessionModel(id);
+      if (!sessionModelOf(id)) {
+        const recorded = modelOnDisk(state.cwd, id);
+        if (recorded) state.modelId = recorded;
       }
     }
     await applyPreferredEffort(id);
@@ -1617,15 +1682,22 @@ ipcMain.handle("cancel", async (_event, sessionId) => {
 });
 
 ipcMain.handle("set-model", async (_event, modelId) => {
-  state.modelId = modelId;
-  saveSettings({ modelId });
   const sessionId = state.sessionId;
   const cwd = cwdOfSession(sessionId) || state.cwd;
+  const previous = state.modelId;
   if (sessionId && cwd) {
-    await attachSession(sessionId, cwd);
-    await acp.setModel(sessionId, modelId);
-    await applyPreferredEffort(sessionId);
+    try {
+      await attachSession(sessionId, cwd, { skipModel: true });
+      await acp.setModel(sessionId, modelId);
+      await applyPreferredEffort(sessionId);
+    } catch (err) {
+      state.modelId = previous;
+      send("state", snapshot());
+      throw err;
+    }
+    rememberSessionModel(sessionId, modelId);
   }
+  state.modelId = modelId;
   send("state", snapshot());
   return snapshot();
 });
