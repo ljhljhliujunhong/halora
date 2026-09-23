@@ -1,3 +1,9 @@
+export function settledChangeStats(record) {
+  if (!record || !Array.isArray(record.files) || !record.files.length) return null;
+  if (typeof record.added !== "number" || typeof record.removed !== "number") return null;
+  return { plus: record.added, minus: record.removed };
+}
+
 // Unified diff line numbers reset at each hunk; file headers aren't edits.
 export function diffRows(text) {
   let old = 0, next = 0, inHunk = false;

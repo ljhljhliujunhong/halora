@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { diffRows, diffSections } = require('../src/diff.mjs');
+const { diffRows, diffSections, settledChangeStats } = require('../src/diff.mjs');
 test('diff numbers distinguish file headers, edits, context and separate hunks', () => {
   const rows = diffRows('diff --git a/f b/f\r\n--- a/f\r\n+++ b/f\r\n@@ -7,2 +7,2 @@\r\n-old\r\n+new\r\n same\r\n@@ -20,0 +21,2 @@\r\n+++code\r\n+second\r\n\\ No newline at end of file\r\n');
   assert.equal(rows[2].kind, 'meta');
@@ -16,4 +16,9 @@ test('compact sections hide headers and fold unmodified gaps', () => {
   assert.equal(folds[0].count, 6);
   assert.ok(folds[1].count >= 11);
   assert.equal(rows.some(row => row.kind === 'meta' || row.kind === 'hunk'), false);
+});
+test('turn headline uses the saved file diff, not a tool-call guess', () => {
+  assert.deepEqual(settledChangeStats({ files: [{ path: 'a' }, { path: 'b' }], added: 21, removed: 7 }), { plus: 21, minus: 7 });
+  assert.equal(settledChangeStats({ files: [], added: 508, removed: 9 }), null);
+  assert.equal(settledChangeStats(null), null);
 });

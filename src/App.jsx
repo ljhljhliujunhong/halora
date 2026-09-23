@@ -12,6 +12,7 @@ import {
   parseSlash,
 } from "./composer.js";
 import { looksLikeFile, extractFileHint } from "./resource-hint.mjs";
+import { settledChangeStats } from "./diff.mjs";
 import brandIcon from "./brand.png";
 import { Workbench } from './Workbench.jsx';
 import { ChangeReviewProvider, ChangeReviewShell, TurnChangesCard, useTurnChanges } from './TurnChanges.jsx';
@@ -644,43 +645,6 @@ function toolRunning(tool, assumeLive = false) {
   return status !== "completed" && status !== "failed" && status !== "error" && status !== "cancelled" && status !== "canceled";
 }
 
-function unifiedDiffStats(text) {
-  const raw = String(text || "");
-  if (!raw.trim()) return null;
-  const marked = raw.match(/(?:^|\n)\s*\+(\d+)\s+[−\-]\s*(\d+)\s*(?:\n|$)/);
-  if (marked) return { plus: Number(marked[1]), minus: Number(marked[2]) };
-  if (!/^(--- |\+\+\+ |@@ )/m.test(raw)) return null;
-  let plus = 0;
-  let minus = 0;
-  for (const line of raw.split(/\r?\n/)) {
-    if (/^\+[^+]/.test(line)) plus += 1;
-    else if (/^-[^-]/.test(line)) minus += 1;
-  }
-  if (!plus && !minus) return null;
-  return { plus, minus };
-}
-
-function lineDiffStats(before, after) {
-  const oldLines = String(before || "").split(/\r?\n/);
-  const newLines = String(after || "").split(/\r?\n/);
-  if (!before && after) return { plus: newLines.length, minus: 0 };
-  if (before && !after) return { plus: 0, minus: oldLines.length };
-  const oldCount = new Map();
-  for (const line of oldLines) oldCount.set(line, (oldCount.get(line) || 0) + 1);
-  let plus = 0;
-  let minus = 0;
-  const newCount = new Map();
-  for (const line of newLines) newCount.set(line, (newCount.get(line) || 0) + 1);
-  for (const line of new Set([...oldCount.keys(), ...newCount.keys()])) {
-    const a = oldCount.get(line) || 0;
-    const b = newCount.get(line) || 0;
-    if (b > a) plus += b - a;
-    if (a > b) minus += a - b;
-  }
-  if (!plus && !minus) return null;
-  return { plus, minus };
-}
-
 function toolPath(tool) {
   const input = tool.input;
   if (input && typeof input === "object") {
@@ -734,29 +698,6 @@ function isImageOnlyOutput(output) {
   }
 }
 
-function toolDiff(tool) {
-  const input = tool.input && typeof tool.input === "object" ? tool.input : null;
-  if (input && (input.old_string != null || input.new_string != null)) {
-    return lineDiffStats(input.old_string, input.new_string);
-  }
-  if (input && typeof input.patch === "string") {
-    const fromPatch = unifiedDiffStats(input.patch);
-    if (fromPatch) return fromPatch;
-  }
-  if (classifyTool(tool) !== "edit") return null;
-  if (input?.content != null) {
-    const plus = String(input.content).split(/\r?\n/).length;
-    return plus ? { plus, minus: 0 } : null;
-  }
-  return unifiedDiffStats(tool.output);
-}
-
-function addDiff(a, b) {
-  if (!b) return a;
-  if (!a) return { plus: b.plus, minus: b.minus };
-  return { plus: a.plus + b.plus, minus: a.minus + b.minus };
-}
-
 function groupTools(tools) {
   const groups = [];
   for (const tool of tools || []) {
@@ -790,7 +731,6 @@ function groupSummary(group) {
   let explore = 0;
   let commands = 0;
   const files = new Set();
-  let stats = null;
   for (const tool of tools) {
     const kind = classifyTool(tool);
     if (kind === "explore") explore += 1;
@@ -798,7 +738,6 @@ function groupSummary(group) {
     else if (kind === "edit") {
       files.add((toolPath(tool) || tool.id).toLowerCase());
     }
-    stats = addDiff(stats, toolDiff(tool));
   }
   const edits = files.size;
   const running = tools.some((tool) => toolRunning(tool));
@@ -806,7 +745,6 @@ function groupSummary(group) {
     return {
       label: running ? "正在执行" : "已执行",
       icon: "command",
-      stats,
     };
   }
   const parts = [];
@@ -814,12 +752,11 @@ function groupSummary(group) {
   if (commands) parts.push(running && tools.some((tool) => classifyTool(tool) === "command" && toolRunning(tool)) ? (commands === 1 ? "正在跑命令" : `正在跑 ${commands} 条命令`) : `跑了 ${commands} 条命令`);
   if (explore) parts.push(running && tools.some((tool) => classifyTool(tool) === "explore" && toolRunning(tool)) ? `正在看 ${explore} 项` : `看了 ${explore} 项`);
   if (!parts.length) {
-    return { label: tools[0]?.title || "工具", icon: "other", stats };
+    return { label: tools[0]?.title || "工具", icon: "other" };
   }
   return {
     label: `${parts.join("，")}${running ? "…" : ""}`,
     icon: edits ? "edit" : commands && !explore ? "command" : "explore",
-    stats,
   };
 }
 
@@ -848,11 +785,11 @@ function IconProcess() {
 }
 
 function DiffStats({ stats }) {
-  if (!stats || (!stats.plus && !stats.minus)) return null;
+  if (!stats) return null;
   return (
     <span className="activity-stats">
-      {stats.plus ? <span className="plus">+{stats.plus}</span> : null}
-      {stats.minus ? <span className="minus">−{stats.minus}</span> : null}
+      <span className="plus">+{stats.plus || 0}</span>
+      <span className="minus">−{stats.minus || 0}</span>
     </span>
   );
 }
@@ -871,7 +808,6 @@ function ToolGroups({ tools, cwd }) {
                 {summary.icon === "command" ? <IconTerminal /> : <IconFolder />}
               </span>
               <span className="activity-label">{summary.label}</span>
-              <DiffStats stats={summary.stats} />
               <span className="activity-caret">›</span>
             </summary>
             <div className="activity-body">
@@ -920,7 +856,6 @@ function runSummary(thought, tools, running) {
   let explore = 0;
   let commands = 0;
   const files = new Set();
-  let stats = null;
   let editBusy = false;
   let commandBusy = false;
   let exploreBusy = false;
@@ -937,7 +872,6 @@ function runSummary(thought, tools, running) {
       files.add((toolPath(tool) || tool.id).toLowerCase());
       if (busy) editBusy = true;
     }
-    stats = addDiff(stats, toolDiff(tool));
   }
   const parts = [];
   if (hasThought) parts.push(running && !(tools || []).length ? "正在思考" : "思考");
@@ -947,7 +881,6 @@ function runSummary(thought, tools, running) {
   if (!parts.length) parts.push(running ? "正在处理" : "已处理");
   return {
     label: `${parts.join("，")}${running && !commandBusy && !editBusy && !exploreBusy ? "…" : ""}`,
-    stats,
   };
 }
 
@@ -972,7 +905,7 @@ function LiveClock({ startedAt, className = "turn-time" }) {
   return <span className={className}>{formatDuration(Math.max(0, now - (startedAt || now)))}</span>;
 }
 
-function RunFold({ thought, tools, cwd, running, duration, startedAt }) {
+function RunFold({ thought, tools, cwd, running, duration, startedAt, changes }) {
   const hasThought = Boolean(String(thought || "").trim());
   const hasTools = Boolean(tools?.length);
   if (!hasThought && !hasTools) return null;
@@ -984,7 +917,7 @@ function RunFold({ thought, tools, cwd, running, duration, startedAt }) {
           <IconProcess />
         </span>
         <span className="activity-label">{summary.label}</span>
-        <DiffStats stats={summary.stats} />
+        <DiffStats stats={settledChangeStats(changes)} />
         {running ? <LiveClock startedAt={startedAt} /> : duration ? <span className="turn-time">{duration}</span> : null}
         <span className="activity-caret">›</span>
       </summary>
@@ -3146,6 +3079,7 @@ export function App() {
                             running={runningTurn}
                             duration={duration}
                             startedAt={message.startedAt || liveStartedAt}
+                            changes={changeCards.get(message.id)}
                           />
                           {!folded && runningTurn ? <LiveClock startedAt={message.startedAt || liveStartedAt} className="turn-time" /> : null}
                           {!folded && !runningTurn && duration ? <div className="turn-time">{duration}</div> : null}
