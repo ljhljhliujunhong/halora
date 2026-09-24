@@ -1047,3 +1047,35 @@ test("reasoning effort is parsed from ACP options and sent as set_config_option"
   assert.equal(g.acp.config.value, "xhigh");
   assert.equal(attached.effort.current, "xhigh");
 });
+
+test("each chat keeps its reasoning effort across switches and a fresh launch", async () => {
+  const a = fixture("effort-windows", "alpha");
+  const b = fixture("effort-windows", "beta");
+  const h = mainHarness();
+  h.saveSettings({ effort: "xhigh", modelId: "grok-4.7" });
+  h.acp.setConfigOption = async (sessionId, configId, value) => {
+    h.acp.efforts = [...(h.acp.efforts || []), [sessionId, configId, value]];
+    return {};
+  };
+  await h.handlers.get("load-chat")(null, { cwd: a.cwd, id: a.id });
+  assert.equal(h.snapshot().effort.current, "xhigh");
+  await h.handlers.get("set-effort")(null, "medium");
+  assert.equal(h.snapshot().effort.current, "medium");
+  assert.equal(h.loadSettings().effort, "xhigh");
+  assert.equal(h.loadSettings().sessionEfforts[a.id], "medium");
+  await h.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
+  assert.equal(h.snapshot().effort.current, "xhigh");
+  await h.handlers.get("set-effort")(null, "low");
+  assert.equal(h.snapshot().effort.current, "low");
+  await h.handlers.get("load-chat")(null, { cwd: a.cwd, id: a.id });
+  assert.equal(h.snapshot().effort.current, "medium");
+  const restarted = mainHarness();
+  restarted.saveSettings({ lastCwd: a.cwd, lastSessionId: a.id });
+  restarted.state.cwd = a.cwd;
+  const opened = await restarted.handlers.get("get-state")();
+  assert.equal(opened.effort.current, "medium");
+  assert.equal(opened.modelId, "grok-4.7");
+  const back = await restarted.handlers.get("load-chat")(null, { cwd: b.cwd, id: b.id });
+  assert.equal(back.effort.current, "low");
+  assert.equal(back.modelId, "grok-4.7");
+});

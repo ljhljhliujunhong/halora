@@ -1225,6 +1225,7 @@ export function App() {
   const modeRef = useRef(null);
   const modelRef = useRef(null);
   const modelBySessionRef = useRef({});
+  const effortBySessionRef = useRef({});
   const dragLive = useRef(null);
   const skipClick = useRef(false);
   const queueRef = useRef([]);
@@ -1253,6 +1254,7 @@ export function App() {
     (async () => {
       try {
         const next = await api.getState();
+        if (next.sessionId && next.effort?.current) effortBySessionRef.current[next.sessionId] = next.effort.current;
         setAppState((prev) => ({ ...prev, ...next }));
         const saved = { ...(next.composers || {}) };
         for (const [key, row] of Object.entries(recoveredComposers.current)) {
@@ -1287,6 +1289,7 @@ export function App() {
           const incoming = event.payload || {};
           const sid = incoming.sessionId || prev.sessionId;
           const picked = sid ? modelBySessionRef.current[sid] : "";
+          if (sid && incoming.effort?.current) effortBySessionRef.current[sid] = incoming.effort.current;
           return { ...prev, ...incoming, modelId: picked || incoming.modelId || prev.modelId };
         });
         if (typeof event.payload?.sidebarCollapsed === "boolean") {
@@ -1904,6 +1907,7 @@ export function App() {
     setBusy(true);
     try {
       const next = await api.newChat(target);
+      if (next.sessionId && next.effort?.current) effortBySessionRef.current[next.sessionId] = next.effort.current;
       setAppState((prev) => ({ ...prev, ...next }));
       restoreComposer(next.sessionId);
       if (next.sessionId) {
@@ -1951,11 +1955,21 @@ export function App() {
     pinLock.current = Date.now() + 800;
     parkComposer(appState.sessionId);
     const picked = modelBySessionRef.current[id];
-    if (picked) setAppState((prev) => ({ ...prev, modelId: picked }));
+    const knownEffort = effortBySessionRef.current[id];
+    if (picked || knownEffort) {
+      setAppState((prev) => ({
+        ...prev,
+        ...(picked ? { modelId: picked } : {}),
+        ...(knownEffort ? { effort: { ...(prev.effort || {}), current: knownEffort } } : {}),
+      }));
+    }
+    setEffortDraft(knownEffort || "");
     setBusy(true);
     try {
       const next = await api.loadChat(id, cwd);
       restoreComposer(id);
+      const sid = next.sessionId || id;
+      if (next.effort?.current) effortBySessionRef.current[sid] = next.effort.current;
       setAppState((prev) => ({
         ...prev,
         ...next,
@@ -2530,14 +2544,34 @@ export function App() {
   };
 
   const changeEffort = async (id) => {
-    if (!id || id === appState.effort?.current) return;
+    const sid = appState.sessionId;
+    const current = (sid && effortBySessionRef.current[sid]) || appState.effort?.current;
+    if (!id || id === current) return;
     setError("");
+    const previous = sid ? effortBySessionRef.current[sid] : "";
+    if (sid) effortBySessionRef.current[sid] = id;
+    setEffortDraft(id);
+    setAppState((prev) => ({
+      ...prev,
+      effort: { ...(prev.effort || {}), current: id },
+    }));
     try {
       const next = await api.setEffort(id);
-      setAppState((prev) => ({ ...prev, ...next }));
-      setEffortDraft(next.effort?.current || id);
+      if (next.sessionId && next.sessionId !== sessionIdRef.current) return;
+      const saved = next.effort?.current || id;
+      if (sid) effortBySessionRef.current[sid] = saved;
+      setAppState((prev) => ({ ...prev, ...next, effort: next.effort ? { ...next.effort, current: saved } : prev.effort }));
+      setEffortDraft(saved);
     } catch (err) {
-      setEffortDraft(appState.effort?.current || "");
+      if (sid) {
+        if (previous) effortBySessionRef.current[sid] = previous;
+        else delete effortBySessionRef.current[sid];
+      }
+      setEffortDraft(previous || "");
+      setAppState((prev) => ({
+        ...prev,
+        effort: prev.effort ? { ...prev.effort, current: previous || prev.effort.current } : prev.effort,
+      }));
       setError(friendlyError(err));
     }
   };
@@ -2563,7 +2597,9 @@ export function App() {
     modelList.find((model) => model.id === viewedModelId) || modelList[0] || null;
   const effort = appState.effort;
   const effortOptions = effort?.options || [];
-  const effortCurrent = showModel && effortDraft ? effortDraft : (effort?.current || "");
+  const viewedEffortId =
+    (appState.sessionId && effortBySessionRef.current[appState.sessionId]) || effort?.current || "";
+  const effortCurrent = showModel && effortDraft ? effortDraft : viewedEffortId;
   const effortIndex = Math.max(0, effortOptions.findIndex((item) => item.id === effortCurrent));
   const effortLabel = effortOptions[effortIndex]?.label || "";
 
@@ -2576,7 +2612,7 @@ export function App() {
             className={`model-btn ${showModel ? "open" : ""}`}
             onClick={() => {
               setShowMode(false);
-              setEffortDraft(appState.effort?.current || "");
+              setEffortDraft(viewedEffortId);
               setShowModel((open) => !open);
             }}
             aria-label="切换模型"

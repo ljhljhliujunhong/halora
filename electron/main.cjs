@@ -33,7 +33,7 @@ const { listSkills, listSkillLibrary, importSkillsFrom, removeUserSkill } = requ
 const { extFromMime, fileToImage, toDataUrl } = require("./media.cjs");
 const { searchFiles, resolveMentions, collectMentions, classifyDroppedPath, classifyDroppedPaths, locateResource } = require("./files.cjs");
 const { normalizeMode, modeSyncSteps, planRequest, questionRequest } = require("./permission-mode.cjs");
-const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions } = require("./effort.cjs");
+const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions, normalizeEffort } = require("./effort.cjs");
 
 const acp = new AcpClient();
 const live = new Map();
@@ -138,7 +138,7 @@ function liveSlot(id, cwd) {
   if (!id) return null;
   let slot = live.get(id);
   if (!slot) {
-    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false, modelId: "" };
+    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false, modelId: "", effortId: "" };
     live.set(id, slot);
   } else if (cwd) {
     slot.cwd = cwd;
@@ -317,7 +317,7 @@ async function attachSession(id, cwd, options = {}) {
   slot.grokPlan = planModeActive(slot.cwd, id);
   applyInit(loaded || {}, id);
   if (!configFromResult(loaded || {})) seedEffortFromDisk(slot.cwd, id);
-  await applyPreferredEffort(id);
+  if (!options.skipEffort) await applySessionEffort(id);
   if (!options.skipModel) await applySessionModel(id);
   return loaded;
 }
@@ -357,6 +357,39 @@ function rememberSessionModel(id, modelId) {
 function forgetSessionModel(id) {
   const slot = live.get(id);
   if (slot) slot.modelId = "";
+}
+
+function sessionEfforts() {
+  const raw = loadSettings().sessionEfforts;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+function sessionEffortOf(id) {
+  if (!id) return "";
+  return normalizeEffort(sessionEfforts()[id]) || normalizeEffort(live.get(id)?.effortId) || "";
+}
+
+function rememberSessionEffort(id, effort) {
+  const value = normalizeEffort(effort);
+  if (!id || !value) return;
+  const slot = liveSlot(id);
+  if (slot) slot.effortId = value;
+  const next = { ...sessionEfforts(), [id]: value };
+  const ids = Object.keys(next);
+  if (ids.length > 300) {
+    for (const old of ids.slice(0, ids.length - 300)) {
+      if (old !== id) delete next[old];
+    }
+  }
+  saveSettings({ sessionEfforts: next });
+}
+
+function defaultEffortId() {
+  return normalizeEffort(loadSettings().effort) || "";
+}
+
+function resolvedSessionEffort(id) {
+  return sessionEffortOf(id) || defaultEffortId();
 }
 
 function resolvedSessionModel(id) {
@@ -703,13 +736,20 @@ async function refreshQuota(force = false) {
   return state.quota;
 }
 
-function applyConfig(result) {
+function applyConfig(result, sessionId = "") {
   const parsed = configFromResult(result);
   if (!parsed) return parsed;
   const options = parsed.options.length ? parsed.options : defaultEffortOptions();
-  const preferred = clampEffort(loadSettings().effort, options);
-  const current = preferred || parsed.current || state.effort?.current || options.find((item) => item.id === "high")?.id || options[options.length - 1]?.id || "";
-  state.effort = { current, options };
+  const target = sessionId || state.sessionId || "";
+  const want = resolvedEffort(resolvedSessionEffort(target) || parsed.current || "");
+  if (!target || target === state.sessionId) {
+    const current = want || state.effort?.current || options.find((item) => item.id === "high")?.id || options[options.length - 1]?.id || "";
+    state.effort = { current, options };
+  } else if (state.effort) {
+    state.effort = { ...state.effort, options };
+  } else {
+    state.effort = { current: want, options };
+  }
   return parsed;
 }
 
@@ -739,7 +779,7 @@ function applyInit(result, sessionId = "") {
   if (sessionId && sessionId === state.sessionId) state.modelId = resolvedSessionModel(sessionId);
   const commands = result?._meta?.availableCommands || result?.availableCommands;
   if (commands) applyCommands(commands);
-  applyConfig(result);
+  applyConfig(result, sessionId);
 }
 
 function effortError(err) {
@@ -753,17 +793,26 @@ function resolvedEffort(value) {
   return clampEffort(value, state.effort?.options || defaultEffortOptions());
 }
 
-async function applyPreferredEffort(sessionId) {
-  const want = resolvedEffort(loadSettings().effort);
-  if (!want || !sessionId || !acp.alive) return;
+async function applySessionEffort(sessionId) {
+  if (!sessionId) return;
+  let want = resolvedEffort(resolvedSessionEffort(sessionId));
+  if (!want && sessionId === state.sessionId) want = resolvedEffort(state.effort?.current);
+  if (!want) return;
+  if (sessionId === state.sessionId) {
+    if (state.effort) state.effort = { ...state.effort, current: want };
+    else state.effort = { current: want, options: defaultEffortOptions() };
+  }
+  if (!acp.alive) return;
   try {
     const result = await acp.setConfigOption(sessionId, "reasoning_effort", want);
-    applyConfig(result);
+    if (sessionId === state.sessionId) applyConfig(result, sessionId);
   } catch {
-    // Model may not advertise reasoning effort.
+    // Keep the window's choice visible; the next open can try again.
   }
-  if (state.effort) state.effort = { ...state.effort, current: want };
-  else state.effort = { current: want, options: defaultEffortOptions() };
+  if (sessionId === state.sessionId) {
+    if (state.effort) state.effort = { ...state.effort, current: want };
+    else state.effort = { current: want, options: defaultEffortOptions() };
+  }
 }
 
 async function ensureAgent() {
@@ -803,9 +852,9 @@ async function createSession() {
       // keep going with the default
     }
   }
-  await applyPreferredEffort(state.sessionId);
+  await applySessionEffort(state.sessionId);
   if (!state.effort && /grok-4/i.test(state.modelId || "")) {
-    const current = resolvedEffort(loadSettings().effort) || "high";
+    const current = resolvedEffort(defaultEffortId()) || "high";
     state.effort = { current, options: defaultEffortOptions() };
   }
   refreshSessions();
@@ -962,7 +1011,7 @@ acp.on("notification", (method, params) => {
     }
     if (update.sessionUpdate === "config_option_update" || update.sessionUpdate === "config_options_update") {
       if (sessionId === state.sessionId) {
-        applyConfig(update);
+        applyConfig(update, sessionId);
         send("state", snapshot());
       }
       return;
@@ -1184,7 +1233,7 @@ ipcMain.handle("get-state", async () => {
   hydrateQuota();
   if (!state.sessionId && settings.lastSessionId && state.sessions.some(s => s.id === settings.lastSessionId)) state.sessionId = settings.lastSessionId;
   const effortOptions = state.effort?.options || defaultEffortOptions();
-  const preferredEffort = clampEffort(settings.effort, effortOptions);
+  const preferredEffort = clampEffort(resolvedSessionEffort(state.sessionId), effortOptions);
   if (preferredEffort) state.effort = { current: preferredEffort, options: effortOptions };
   else if (state.sessionId) seedEffortFromDisk(state.cwd, state.sessionId);
   if (!state.effort) {
@@ -1260,11 +1309,16 @@ ipcMain.handle("load-chat", async (_event, payload) => {
         await attachSession(id, state.cwd);
       } catch {
         if (id === state.sessionId) state.modelId = resolvedSessionModel(id);
+        const want = resolvedEffort(resolvedSessionEffort(id));
+        if (want && id === state.sessionId) {
+          if (state.effort) state.effort = { ...state.effort, current: want };
+          else state.effort = { current: want, options: defaultEffortOptions() };
+        } else if (id === state.sessionId) seedEffortFromDisk(state.cwd, id);
       }
     } else {
       await applySessionModel(id);
     }
-    await applyPreferredEffort(id);
+    await applySessionEffort(id);
     refreshSessions();
     refreshSkills();
     refreshContext();
@@ -1672,7 +1726,7 @@ ipcMain.handle("set-model", async (_event, modelId) => {
     try {
       await attachSession(sessionId, cwd, { skipModel: true });
       await acp.setModel(sessionId, nextId);
-      await applyPreferredEffort(sessionId);
+      await applySessionEffort(sessionId);
     } catch (err) {
       if (previous) rememberSessionModel(sessionId, previous);
       else forgetSessionModel(sessionId);
@@ -1689,21 +1743,23 @@ ipcMain.handle("set-model", async (_event, modelId) => {
 ipcMain.handle("set-effort", async (_event, effort) => {
   const sessionId = state.sessionId;
   const cwd = cwdOfSession(sessionId) || state.cwd;
-  if (sessionId && cwd) await attachSession(sessionId, cwd);
-  else await ensureAgent();
   const value = resolvedEffort(effort);
   if (!value) throw new Error("不支持这个思考强度");
-  if (sessionId && acp.alive && value !== state.effort?.current) {
+  if (sessionId && cwd) await attachSession(sessionId, cwd, { skipEffort: true });
+  else await ensureAgent();
+  if (sessionId && acp.alive) {
     try {
       const result = await acp.setConfigOption(sessionId, "reasoning_effort", value);
-      applyConfig(result);
+      applyConfig(result, sessionId);
     } catch (err) {
       throw effortError(err);
     }
   }
-  saveSettings({ effort: value });
-  if (state.effort) state.effort = { ...state.effort, current: value };
-  else state.effort = { current: value, options: defaultEffortOptions() };
+  if (sessionId) rememberSessionEffort(sessionId, value);
+  if (state.sessionId === sessionId || !sessionId) {
+    if (state.effort) state.effort = { ...state.effort, current: value };
+    else state.effort = { current: value, options: defaultEffortOptions() };
+  }
   send("state", snapshot());
   return snapshot();
 });
@@ -1905,11 +1961,16 @@ ipcMain.handle('save-preferences', async (_event, payload) => {
       }
     }
   }
-  if (next.effort && next.effort !== old.effort) {
-    const want = resolvedEffort(next.effort);
-    if (state.effort) state.effort = { ...state.effort, current: want };
-    else state.effort = { current: want, options: defaultEffortOptions() };
-    await applyPreferredEffort(state.sessionId);
+  if (next.effort !== old.effort) {
+    const sid = state.sessionId;
+    if (!sid || !sessionEffortOf(sid)) {
+      const want = resolvedEffort(next.effort);
+      if (want) {
+        if (state.effort) state.effort = { ...state.effort, current: want };
+        else state.effort = { current: want, options: defaultEffortOptions() };
+        if (sid) await applySessionEffort(sid);
+      }
+    }
   }
   state.settingsWarning = '';
   if (old.autoCompact !== next.autoCompact) try {
