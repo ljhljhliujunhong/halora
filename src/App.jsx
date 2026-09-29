@@ -1139,6 +1139,7 @@ export function App() {
     runningIds: [],
     models: [],
     modelId: "grok-4.6",
+    contextWindow: null,
     sessions: [],
     projects: [],
     grokFound: true,
@@ -1192,6 +1193,7 @@ export function App() {
   const [showMode, setShowMode] = useState(false);
   const [showModel, setShowModel] = useState(false);
   const [effortDraft, setEffortDraft] = useState("");
+  const [contextWindowBusy, setContextWindowBusy] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [skillQuery, setSkillQuery] = useState("");
   const [pendingImport, setPendingImport] = useState("");
@@ -1498,33 +1500,39 @@ export function App() {
   }, [messages, appState.running, appState.sessionId]);
 
   useEffect(() => {
-    if (!stickBottom.current) return;
     const el = scroller.current;
-    if (!el) return;
-    pinToBottom();
+    if (!el || paneParked) return;
+    const syncAfterResize = () => {
+      if (stickBottom.current) pinToBottom();
+      const overflow = el.scrollHeight > el.clientHeight + 48;
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setAwayFromBottom(overflow && gap >= 96);
+      if (!overflow) stickBottom.current = true;
+    };
+    syncAfterResize();
     const ro =
       typeof ResizeObserver === "undefined"
         ? null
-        : new ResizeObserver(() => {
-            if (!parkedRef.current && stickBottom.current) pinToBottom();
-          });
+        : new ResizeObserver(syncAfterResize);
     if (ro) {
       ro.observe(el);
       for (const child of el.children) ro.observe(child);
     }
+    let nextFrame;
     const frame = requestAnimationFrame(() => {
-      pinToBottom();
-      requestAnimationFrame(pinToBottom);
+      syncAfterResize();
+      nextFrame = requestAnimationFrame(syncAfterResize);
     });
-    const later = setTimeout(pinToBottom, 160);
-    const last = setTimeout(pinToBottom, 480);
+    const later = setTimeout(syncAfterResize, 160);
+    const last = setTimeout(syncAfterResize, 480);
     return () => {
       ro?.disconnect();
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(nextFrame);
       clearTimeout(later);
       clearTimeout(last);
     };
-  }, [messages, appState.sessionId]);
+  }, [messages, appState.sessionId, appState.cwd, paneParked]);
 
   const project = folderName(appState.cwd);
   const liveAssistant = appState.running
@@ -2576,6 +2584,21 @@ export function App() {
     }
   };
 
+  const changeContextWindow = async (tokens) => {
+    if (!tokens || tokens === appState.contextWindow) return;
+    setError("");
+    setContextWindowBusy(true);
+    try {
+      const next = await api.setContextWindow(tokens);
+      if (next.sessionId && next.sessionId !== sessionIdRef.current) return;
+      setAppState((prev) => ({ ...prev, ...next }));
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setContextWindowBusy(false);
+    }
+  };
+
   const changeMode = async (id) => {
     setShowMode(false);
     try {
@@ -2595,6 +2618,11 @@ export function App() {
     (appState.sessionId && modelBySessionRef.current[appState.sessionId]) || appState.modelId;
   const currentModel =
     modelList.find((model) => model.id === viewedModelId) || modelList[0] || null;
+  const contextWindows = currentModel?.contextWindows || [];
+  const canChooseContextWindow = Boolean(appState.sessionId && contextWindows.length > 1);
+  const selectedContextWindow = contextWindows.includes(appState.contextWindow)
+    ? appState.contextWindow
+    : currentModel?.defaultContextTokens;
   const effort = appState.effort;
   const effortOptions = effort?.options || [];
   const viewedEffortId =
@@ -2638,6 +2666,7 @@ export function App() {
                     step={1}
                     value={effortIndex}
                     aria-label="思考强度"
+                    disabled={contextWindowBusy}
                     onChange={(event) => {
                       const next = effortOptions[Number(event.target.value)];
                       if (next) setEffortDraft(next.id);
@@ -2656,6 +2685,7 @@ export function App() {
                   type="button"
                   key={model.id}
                   className={`model-item ${model.id === viewedModelId ? "active" : ""}`}
+                  disabled={contextWindowBusy}
                   onClick={() => changeModel(model.id)}
                 >
                   <span>{model.name || model.id}</span>
@@ -3330,12 +3360,13 @@ export function App() {
                           setShowQuota(false);
                           setShowContext((open) => !open);
                         }}
-                        title="上下文"
+                        title={canChooseContextWindow ? "查看上下文并选择长度" : "上下文"}
                       >
                         <CtxRing percent={context.percent} />
                         <span>
                           {context.estimated ? "约 " : ""}{formatTokens(context.used)}/{formatTokens(context.total)}
                         </span>
+                        {canChooseContextWindow ? <span className="ctx-chip-chevron"><IconChevron down /></span> : null}
                       </button>
                       {showContext ? (
                         <div className="ctx-pop">
@@ -3345,6 +3376,26 @@ export function App() {
                               {context.estimated ? "约 " : ""}{formatCount(context.used)} / {formatCount(context.total)} ({context.percent}%)
                             </b>
                           </div>
+                          {canChooseContextWindow ? (
+                            <div className="ctx-window-picker" role="group" aria-label="上下文长度">
+                              <div className="ctx-window-title">上下文长度</div>
+                              <div className="ctx-window-options">
+                                {contextWindows.map((tokens) => (
+                                  <button
+                                    type="button"
+                                    key={tokens}
+                                    className={`ctx-window-option ${tokens === selectedContextWindow ? "active" : ""}`}
+                                    aria-pressed={tokens === selectedContextWindow}
+                                    title={tokens < context.used ? "切换到较短长度会自动压缩对话" : `${formatCount(tokens)} tokens`}
+                                    disabled={busy || appState.running || contextWindowBusy}
+                                    onClick={() => changeContextWindow(tokens)}
+                                  >
+                                    {formatTokens(tokens)}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
                           <button
                             type="button"
                             className="ctx-compact"

@@ -703,6 +703,15 @@ select {
   --ring-progress: var(--danger);
 }
 
+.ctx-chip-chevron {
+  display: grid;
+  place-items: center;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+.ctx-chip-chevron svg { width: 12px; height: 12px; }
+
 .ctx-ring { flex-shrink: 0; }
 .ctx-ring-track { stroke: var(--ring-track, #d5dce6); }
 .ctx-ring-progress { stroke: var(--ring-progress, var(--accent)); }
@@ -736,6 +745,49 @@ select {
   color: var(--text);
   font-weight: 600;
 }
+
+.ctx-window-picker {
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--bg-3);
+}
+
+.ctx-window-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ctx-window-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ctx-window-option {
+  flex: 1 1 60px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-window-option:hover:not(:disabled) { border-color: var(--accent); }
+.ctx-window-option.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.ctx-window-option:disabled { cursor: default; opacity: 0.65; }
 
 .quota-pop {
   width: 240px;

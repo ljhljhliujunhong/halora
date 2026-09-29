@@ -34,6 +34,7 @@ const { extFromMime, fileToImage, toDataUrl } = require("./media.cjs");
 const { searchFiles, resolveMentions, collectMentions, classifyDroppedPath, classifyDroppedPaths, locateResource } = require("./files.cjs");
 const { normalizeMode, modeSyncSteps, planRequest, questionRequest } = require("./permission-mode.cjs");
 const { clampEffort, configFromResult, effortFromSummary, defaultEffortOptions, normalizeEffort } = require("./effort.cjs");
+const { positiveTokens, modelContextInfo, contextWindowForModel } = require("./context-window.cjs");
 
 const acp = new AcpClient();
 const live = new Map();
@@ -47,6 +48,7 @@ const state = {
   ready: false,
   models: [],
   modelId: "grok-4.6",
+  contextWindow: null,
   effort: null,
   sessions: [],
   projects: [],
@@ -138,7 +140,7 @@ function liveSlot(id, cwd) {
   if (!id) return null;
   let slot = live.get(id);
   if (!slot) {
-    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false, modelId: "", effortId: "" };
+    slot = { cwd: cwd || null, running: false, gen: 0, attached: false, grokYolo: false, grokPlan: false, modelId: "", effortId: "", contextWindow: null, contextWindowSelection: null };
     live.set(id, slot);
   } else if (cwd) {
     slot.cwd = cwd;
@@ -402,6 +404,9 @@ async function applySessionModel(id) {
   if (!acp.alive || !want) return;
   try {
     await acp.setModel(id, want);
+    const slot = liveSlot(id);
+    slot.contextWindow = contextWindowForModel(state.models, want, slot.contextWindowSelection);
+    if (id === state.sessionId) state.contextWindow = slot.contextWindow;
   } catch {
     // Keep the chosen model visible; the next open can try again.
   }
@@ -431,6 +436,7 @@ function snapshot() {
     grokBin: state.grokBin,
     models: state.models,
     modelId: state.modelId,
+    contextWindow: state.contextWindow,
     effort: state.effort,
     sessions: state.sessions,
     projects: state.projects,
@@ -629,7 +635,7 @@ async function switchProject(cwd, { clearSession = true } = {}) {
   const same = state.cwd && samePath(state.cwd, resolved);
   state.cwd = resolved;
   rememberProject(resolved);
-  if (clearSession) { state.sessionId = null; saveSettings({ lastSessionId: null }); }
+  if (clearSession) { state.sessionId = null; state.contextWindow = null; saveSettings({ lastSessionId: null }); }
   await ensureAgent();
   refreshSessions();
   refreshSkills();
@@ -658,12 +664,23 @@ function refreshSkills() {
   return state.skills;
 }
 
+function withSelectedContextWindow(context, sessionId) {
+  const selected = positiveTokens(live.get(sessionId)?.contextWindow);
+  if (!selected) return context;
+  return {
+    ...context,
+    total: selected,
+    percent: Math.max(0, Math.min(100, Math.round(context.used / selected * 100))),
+    free: Math.max(0, selected - context.used),
+  };
+}
+
 function refreshContext() {
   if (!state.cwd || !state.sessionId) {
     state.context = null;
     return null;
   }
-  state.context = buildContext(state.cwd, state.sessionId);
+  state.context = withSelectedContextWindow(buildContext(state.cwd, state.sessionId), state.sessionId);
   state.context.autoCompact = preferences(loadSettings()).autoCompact;
   return state.context;
 }
@@ -774,9 +791,18 @@ function applyInit(result, sessionId = "") {
     state.models = models.map((m) => ({
       id: m.modelId,
       name: m.name || m.modelId,
+      ...modelContextInfo(m),
     }));
   }
-  if (sessionId && sessionId === state.sessionId) state.modelId = resolvedSessionModel(sessionId);
+  if (sessionId && sessionId === state.sessionId) {
+    state.modelId = resolvedSessionModel(sessionId);
+    const slot = liveSlot(sessionId);
+    const serverModelId = result?.models?.currentModelId || result?._meta?.modelState?.currentModelId;
+    const serverMeta = state.models.find((model) => model.id === serverModelId);
+    if (serverModelId) slot.contextWindowSelection = serverMeta?.selectedContextTokens || null;
+    slot.contextWindow = contextWindowForModel(state.models, state.modelId, slot.contextWindowSelection);
+    state.contextWindow = slot.contextWindow;
+  }
   const commands = result?._meta?.availableCommands || result?.availableCommands;
   if (commands) applyCommands(commands);
   applyConfig(result, sessionId);
@@ -848,6 +874,8 @@ async function createSession() {
     try {
       await acp.setModel(state.sessionId, preferred);
       state.modelId = preferred;
+      slot.contextWindow = contextWindowForModel(state.models, preferred, slot.contextWindowSelection);
+      state.contextWindow = slot.contextWindow;
     } catch {
       // keep going with the default
     }
@@ -956,6 +984,16 @@ function handleSessionNotice(params) {
   const sessionId = noticeSessionId(params);
   if (loadingId && sessionId === loadingId) return;
   const cwd = cwdOfSession(sessionId);
+  if (kind === "model_changed" && sessionId === state.sessionId && update.model_id === state.modelId) {
+    const slot = liveSlot(sessionId);
+    slot.contextWindowSelection = positiveTokens(update.context_window_selection);
+    const selected = contextWindowForModel(state.models, state.modelId, slot.contextWindowSelection);
+    state.contextWindow = selected;
+    slot.contextWindow = selected;
+    refreshContext();
+    send("state", snapshot());
+    return;
+  }
   if (kind === "auto_compact_started") {
     send("compact", {
       sessionId,
@@ -1304,6 +1342,7 @@ ipcMain.handle("load-chat", async (_event, payload) => {
     state.sessionId = id;
     saveSettings({ lastSessionId: id });
     const slot = liveSlot(id, state.cwd);
+    state.contextWindow = slot.contextWindow;
     if (!slot.attached) {
       try {
         await attachSession(id, state.cwd);
@@ -1440,6 +1479,7 @@ ipcMain.handle("hide-project", async (_event, { cwd }) => {
     state.cwd = null;
     state.sessionId = null;
     state.context = null;
+    state.contextWindow = null;
     send("transcript", { sessionId: null, messages: [] });
   }
   refreshSessions();
@@ -1479,6 +1519,7 @@ ipcMain.handle("delete-chat", async (_event, { id, cwd }) => {
     if (state.sessionId === id) {
       state.sessionId = null;
       state.context = null;
+      state.contextWindow = null;
       send("transcript", { sessionId: id, messages: [] });
     }
     const settings = loadSettings();
@@ -1655,7 +1696,7 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
         send('state', snapshot());
       }
     }
-    const context = buildContext(cwd, sessionId);
+    const context = withSelectedContextWindow(buildContext(cwd, sessionId), sessionId);
     if (live.get(sessionId)?.gen !== gen) throw new Error('任务已取消');
     if (!rawText.trim().startsWith('/') && context.percent >= preferences(loadSettings()).autoCompact) {
       await acp.compact(sessionId, '');
@@ -1719,6 +1760,7 @@ ipcMain.handle("set-model", async (_event, modelId) => {
   const sessionId = state.sessionId;
   const cwd = cwdOfSession(sessionId) || state.cwd;
   const previous = sessionModelOf(sessionId);
+  const previousWindow = state.contextWindow;
   const nextId = normalizeModelId(modelId);
   if (sessionId && nextId) rememberSessionModel(sessionId, nextId);
   if (sessionId && sessionId === state.sessionId && nextId) state.modelId = nextId;
@@ -1726,17 +1768,46 @@ ipcMain.handle("set-model", async (_event, modelId) => {
     try {
       await attachSession(sessionId, cwd, { skipModel: true });
       await acp.setModel(sessionId, nextId);
+      const slot = liveSlot(sessionId);
+      slot.contextWindow = contextWindowForModel(state.models, nextId, slot.contextWindowSelection);
+      if (state.sessionId === sessionId) state.contextWindow = slot.contextWindow;
       await applySessionEffort(sessionId);
     } catch (err) {
       if (previous) rememberSessionModel(sessionId, previous);
       else forgetSessionModel(sessionId);
       if (state.sessionId === sessionId) state.modelId = previous || defaultModelId();
+      if (state.sessionId === sessionId) state.contextWindow = previousWindow;
       send("state", snapshot());
       throw err;
     }
   }
   if (state.sessionId === sessionId && nextId) state.modelId = nextId;
+  if (state.sessionId === sessionId) refreshContext();
   send("state", snapshot());
+  return snapshot();
+});
+
+ipcMain.handle("set-context-window", async (_event, tokens) => {
+  const sessionId = state.sessionId;
+  const cwd = cwdOfSession(sessionId) || state.cwd;
+  if (!sessionId || !cwd) throw new Error("先打开一次对话");
+  if (live.get(sessionId)?.running) throw new Error("请等这次回答结束后再切换上下文长度");
+  await attachSession(sessionId, cwd, { skipModel: true, skipEffort: true });
+  const modelId = state.modelId;
+  const model = state.models.find((item) => item.id === modelId);
+  const value = positiveTokens(tokens);
+  if (!value || !model?.contextWindows?.includes(value) || model.contextWindows.length < 2) {
+    throw new Error("当前模型不支持这个上下文长度");
+  }
+  await acp.setModel(sessionId, modelId, value);
+  const slot = liveSlot(sessionId);
+  slot.contextWindowSelection = value;
+  slot.contextWindow = value;
+  if (state.sessionId === sessionId && state.modelId === modelId) {
+    state.contextWindow = value;
+    refreshContext();
+    send("state", snapshot());
+  }
   return snapshot();
 });
 

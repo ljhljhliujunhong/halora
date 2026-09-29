@@ -344,8 +344,10 @@ class AcpClient extends EventEmitter {
     );
   }
 
-  setModel(sessionId, modelId) {
-    return this.request("session/set_model", { sessionId, modelId }, { timeoutMs: 10000 });
+  setModel(sessionId, modelId, contextWindow) {
+    const params = { sessionId, modelId };
+    if (contextWindow != null) params._meta = { contextWindow };
+    return this.request("session/set_model", params, { timeoutMs: 10000 });
   }
 
   // Plan mode is a standard ACP session mode on Grok: "plan" or "default".

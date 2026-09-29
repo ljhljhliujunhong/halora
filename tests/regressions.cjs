@@ -16,6 +16,8 @@ const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require(".
 const { looksLikeFile } = require("../src/resource-hint.mjs");
 const { agentSpawnArgs, sessionMeta, modeSyncSteps, planRequest, questionRequest, planReply, questionReply } = require("../electron/permission-mode.cjs");
 const { normalizeEffort, clampEffort, parseConfigOptions, configFromResult, effortFromSummary, defaultEffortOptions } = require("../electron/effort.cjs");
+const { modelContextInfo, contextWindowForModel } = require("../electron/context-window.cjs");
+const { AcpClient } = require("../electron/acp.cjs");
 const writeJson = (file, data) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data));
@@ -1046,6 +1048,51 @@ test("reasoning effort is parsed from ACP options and sent as set_config_option"
   assert.ok(g.acp.loads.includes(f.id));
   assert.equal(g.acp.config.value, "xhigh");
   assert.equal(attached.effort.current, "xhigh");
+});
+
+test("context choices follow model capabilities and use set_model metadata", async () => {
+  const flexible = {
+    modelId: "grok-flexible",
+    name: "Flexible",
+    _meta: { totalContextTokens: 256000, contextWindows: [500000, 256000], contextWindow: 500000 },
+  };
+  const fixed = { modelId: "grok-fixed", name: "Fixed", _meta: { totalContextTokens: 128000 } };
+  const parsed = { id: flexible.modelId, ...modelContextInfo(flexible) };
+  assert.deepEqual(parsed.contextWindows, [256000, 500000]);
+  assert.equal(contextWindowForModel([parsed], parsed.id, 500000), 500000);
+  assert.equal(contextWindowForModel([parsed], parsed.id, 999999), 256000);
+  assert.deepEqual(modelContextInfo(fixed).contextWindows, []);
+
+  const client = new AcpClient();
+  client.request = async (method, params) => ({ method, params });
+  const request = await client.setModel("chat", flexible.modelId, 500000);
+  assert.equal(request.method, "session/set_model");
+  assert.deepEqual(request.params._meta, { contextWindow: 500000 });
+  assert.equal((await client.setModel("chat", fixed.modelId)).params._meta, undefined);
+
+  const f = fixture("context-windows", "chat");
+  const h = mainHarness();
+  h.saveSettings({ modelId: flexible.modelId });
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.acp.loadSession = async () => ({
+    models: { currentModelId: flexible.modelId, availableModels: [flexible, fixed] },
+  });
+  h.acp.setModel = async (...args) => { h.acp.lastModel = args; return {}; };
+  await h.handlers.get("load-chat")(null, { cwd: f.cwd, id: f.id });
+  assert.equal(h.snapshot().contextWindow, 500000);
+  assert.equal(h.snapshot().context.total, 500000);
+  await h.handlers.get("set-context-window")(null, 256000);
+  assert.deepEqual(h.acp.lastModel, [f.id, flexible.modelId, 256000]);
+  assert.equal(h.snapshot().contextWindow, 256000);
+  assert.equal(h.snapshot().context.total, 256000);
+  await assert.rejects(() => h.handlers.get("set-context-window")(null, 1000000), /不支持/);
+  await h.handlers.get("set-context-window")(null, 500000);
+  await h.handlers.get("set-model")(null, fixed.modelId);
+  assert.deepEqual(h.snapshot().models.find((model) => model.id === fixed.modelId).contextWindows, []);
+  await assert.rejects(() => h.handlers.get("set-context-window")(null, 128000), /不支持/);
+  await h.handlers.get("set-model")(null, flexible.modelId);
+  assert.equal(h.snapshot().contextWindow, 500000);
 });
 
 test("each chat keeps its reasoning effort across switches and a fresh launch", async () => {
