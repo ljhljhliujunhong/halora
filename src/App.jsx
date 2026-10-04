@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "./markdown.js";
 import { applyTimedUpdate, stampActiveAssistant, finishTimedTurn, finishActiveTurn } from './turn-timing.mjs';
 import {
@@ -16,6 +16,7 @@ import { settledChangeStats } from "./diff.mjs";
 import brandIcon from "./brand.png";
 import { Workbench } from './Workbench.jsx';
 import { ChangeReviewProvider, ChangeReviewShell, TurnChangesCard, useTurnChanges } from './TurnChanges.jsx';
+import { placeTurnChanges } from './turn-changes-place.mjs';
 import { ComposerField } from "./ComposerField.jsx";
 
 const api = window.workshop;
@@ -1238,15 +1239,7 @@ export function App() {
   if (appState.running && appState.sessionId) runningRef.current.add(appState.sessionId);
   const messages = threads[appState.sessionId] || [];
   const turnChanges = useTurnChanges(appState.cwd, appState.sessionId);
-  const changeCards = new Map();
-  const unattachedChanges = [];
-  for (const record of turnChanges) {
-    const message = messages.findLast(item => item.role === 'assistant' && (
-      (record.turnId && item.turnId === record.turnId) || (record.startedAt && item.startedAt === record.startedAt)
-    ));
-    if (message) changeCards.set(message.id, record);
-    else unattachedChanges.push(record);
-  }
+  const { cards: changeCards, byIndex: changeAnchors } = placeTurnChanges(messages, turnChanges);
   const changeProjectRunning = appState.running || (appState.projects || []).some(project =>
     project.cwd?.toLowerCase() === appState.cwd?.toLowerCase() && (project.sessions || []).some(session => (appState.runningIds || []).includes(session.id)));
   const compactPhase = compactPhases[appState.sessionId] || "";
@@ -2055,6 +2048,7 @@ export function App() {
             text: item.text,
             images: item.images,
             files: item.files,
+            sentAt: Date.now(),
           },
         ],
       }));
@@ -3092,8 +3086,10 @@ export function App() {
                 </div>
               ) : null}
 
-              {messages.map((message) =>
-                message.kind === "compact" ? (
+              {messages.map((message, index) => (
+                <Fragment key={message.id || index}>
+                {(changeAnchors.get(index) || []).map(record => <TurnChangesCard key={record.id} record={record} projectRunning={changeProjectRunning} />)}
+                {message.kind === "compact" ? (
                   <div key={message.id} className="compact-note">
                     {message.before != null &&
                     message.after != null &&
@@ -3167,10 +3163,11 @@ export function App() {
                     <MarkdownView text={message.text} />
                     {changeCards.has(message.id) && <TurnChangesCard record={changeCards.get(message.id)} projectRunning={changeProjectRunning} />}
                   </article>
-                )
-              )}
+                )}
+                </Fragment>
+              ))}
 
-              {unattachedChanges.map(record => <TurnChangesCard key={record.id} record={record} projectRunning={changeProjectRunning} />)}
+              {(changeAnchors.get(messages.length) || []).map(record => <TurnChangesCard key={record.id} record={record} projectRunning={changeProjectRunning} />)}
 
               {compactPhase === "start" ? (
                 <div className="pulse">正在压缩</div>
@@ -3366,7 +3363,6 @@ export function App() {
                         <span>
                           {context.estimated ? "约 " : ""}{formatTokens(context.used)}/{formatTokens(context.total)}
                         </span>
-                        {canChooseContextWindow ? <span className="ctx-chip-chevron"><IconChevron down /></span> : null}
                       </button>
                       {showContext ? (
                         <div className="ctx-pop">
