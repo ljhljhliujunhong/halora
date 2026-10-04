@@ -1,7 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, execFile } = require("node:child_process");
 const { AcpClient } = require("./acp.cjs");
 const { findGrokBinary, grokHome } = require("./grok-path.cjs");
 const grokUpdate = require("./update.cjs");
@@ -16,6 +16,8 @@ const {
   listSessionsForCwd,
   listProjects,
   readTranscript,
+  readLiveTranscript,
+  readSessionActivity,
   renameSession,
   deleteSession,
   setAutoTitle,
@@ -39,6 +41,13 @@ const { positiveTokens, modelContextInfo, contextWindowForModel } = require("./c
 const acp = new AcpClient();
 const live = new Map();
 const changeCaptures = new Map();
+const externalRuns = new Map();
+const externalDismissed = new Map();
+const haloraQuietUntil = new Map();
+const externalTouched = new Set();
+const transcriptSigs = new Map();
+const transcriptTimers = new Map();
+let resumeOwners = new Map();
 let loadingId = null;
 
 const state = {
@@ -202,7 +211,277 @@ function runningIds() {
   }
   for (const drain of acp.draining?.values() || []) if (!ids.includes(drain.sessionId)) ids.push(drain.sessionId);
   for (const id of changeCaptures.keys()) if (!ids.includes(id)) ids.push(id);
+  for (const id of externalRuns.keys()) if (!ids.includes(id)) ids.push(id);
   return ids;
+}
+
+const EXTERNAL_FRESH_MS = 15000;
+
+function ownerPid(id) {
+  return resumeOwners.get(String(id || "").toLowerCase()) || 0;
+}
+
+function canonicalSessionId(id) {
+  const want = String(id || "").toLowerCase();
+  if (!want) return "";
+  for (const project of state.projects || []) {
+    for (const session of project.sessions || []) {
+      if (String(session.id).toLowerCase() === want) return session.id;
+    }
+  }
+  if (state.sessionId && String(state.sessionId).toLowerCase() === want) return state.sessionId;
+  for (const key of externalRuns.keys()) {
+    if (String(key).toLowerCase() === want) return key;
+  }
+  return String(id);
+}
+
+function findSessionCwd(id) {
+  const ext = externalRuns.get(id);
+  if (ext?.cwd) return ext.cwd;
+  const slot = live.get(id);
+  if (slot?.cwd) return slot.cwd;
+  for (const project of state.projects || []) {
+    if ((project.sessions || []).some((item) => item.id === id)) return project.cwd;
+  }
+  if (id && id === state.sessionId) return state.cwd;
+  return "";
+}
+
+function locateSession(id, cwd) {
+  const hinted = cwd || findSessionCwd(id);
+  if (hinted) {
+    const dir = sessionDir(hinted, id);
+    if (dir) return { cwd: hinted, dir };
+  }
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const root = sessionsRoot();
+  if (!fs.existsSync(root)) return null;
+  for (const group of fs.readdirSync(root)) {
+    const dir = path.join(root, group, id);
+    if (!fs.existsSync(dir)) continue;
+    let decoded = "";
+    try { decoded = decodeURIComponent(group); } catch { decoded = ""; }
+    return { cwd: decoded, dir };
+  }
+  return null;
+}
+
+function sessionFileAge(dir) {
+  let newest = 0;
+  for (const name of ["events.jsonl", "updates.jsonl", "chat_history.jsonl"]) {
+    try { newest = Math.max(newest, fs.statSync(path.join(dir, name)).mtimeMs); } catch { /* missing */ }
+  }
+  return newest ? Date.now() - newest : Infinity;
+}
+
+function fileSig(dir) {
+  const parts = [];
+  for (const name of ["chat_history.jsonl", "updates.jsonl", "events.jsonl"]) {
+    try {
+      const stat = fs.statSync(path.join(dir, name));
+      parts.push(`${stat.size}:${Math.round(stat.mtimeMs)}`);
+    } catch {
+      parts.push("-");
+    }
+  }
+  return parts.join("|");
+}
+
+function releaseObservedTurn(id) {
+  // Grok writes the turn log slightly after our own turn ends. Ignore that
+  // tail unless a separate `grok --resume` process still owns the session.
+  haloraQuietUntil.set(id, Date.now() + 4000);
+  const found = locateSession(id);
+  if (!found) return;
+  const activity = readSessionActivity(found.dir);
+  if (!activity.open) return;
+  externalDismissed.set(id, activity.startedAt);
+  const ext = externalRuns.get(id);
+  if (ext && ext.startedAt === activity.startedAt) externalRuns.delete(id);
+}
+
+function turnInfo(id) {
+  const slot = live.get(id);
+  if (slot?.running && slot.turnStartedAt && !slot.compactTurn) {
+    return { sessionId: id, turnId: slot.turnId, startedAt: slot.turnStartedAt };
+  }
+  const ext = externalRuns.get(id);
+  if (!ext?.startedAt) return null;
+  return { sessionId: id, turnId: `external:${id}:${ext.startedAt}`, startedAt: ext.startedAt };
+}
+
+function publishExternalTranscript(id, cwd, { live = true, force = false } = {}) {
+  if (!id || id !== state.sessionId || loadingId === id) return;
+  const found = locateSession(id, cwd);
+  if (!found) return;
+  if (live) {
+    const sig = fileSig(found.dir);
+    if (!force && transcriptSigs.get(id) === sig) return;
+    transcriptSigs.set(id, sig);
+  } else {
+    transcriptSigs.delete(id);
+  }
+  send("transcript", {
+    sessionId: id,
+    messages: live ? readLiveTranscript(found.cwd, id) : readTranscript(found.cwd, id),
+    live: Boolean(live),
+    external: true,
+    turn: live ? turnInfo(id) : null,
+  });
+}
+
+function scheduleExternalTranscript(id, cwd) {
+  if (transcriptTimers.has(id)) return;
+  const timer = setTimeout(() => {
+    transcriptTimers.delete(id);
+    if (!externalRuns.has(id)) return;
+    publishExternalTranscript(id, externalRuns.get(id)?.cwd || cwd, { live: true });
+  }, 350);
+  transcriptTimers.set(id, timer);
+}
+
+function clearExternal(id, cwd) {
+  const had = externalRuns.get(id);
+  if (!had) return false;
+  externalRuns.delete(id);
+  const timer = transcriptTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    transcriptTimers.delete(id);
+  }
+  publishExternalTranscript(id, cwd || had.cwd, { live: false, force: true });
+  return true;
+}
+
+// Another agent can wake an existing chat with `grok --resume`. That work
+// runs in a separate process, so it never enters our own turn slot.
+function refreshExternal(id, cwd, { allowFresh = false, quiet = false } = {}) {
+  const sessionId = canonicalSessionId(id);
+  if (!sessionId) return false;
+  if (live.get(sessionId)?.running) {
+    externalRuns.delete(sessionId);
+    return false;
+  }
+  const found = locateSession(sessionId, cwd);
+  if (!found) return Boolean(clearExternal(sessionId, cwd));
+  const activity = readSessionActivity(found.dir);
+  if (activity.open && externalDismissed.has(sessionId) && externalDismissed.get(sessionId) !== activity.startedAt) {
+    externalDismissed.delete(sessionId);
+  }
+  if (!activity.open || externalDismissed.get(sessionId) === activity.startedAt) {
+    return clearExternal(sessionId, found.cwd);
+  }
+  const pid = ownerPid(sessionId);
+  if (!pid && (haloraQuietUntil.get(sessionId) || 0) > Date.now()) {
+    return clearExternal(sessionId, found.cwd);
+  }
+  const fresh = sessionFileAge(found.dir) <= EXTERNAL_FRESH_MS;
+  const keep = Boolean(pid) || (fresh && (allowFresh || externalTouched.has(sessionId) || externalRuns.has(sessionId)));
+  if (!keep) return clearExternal(sessionId, found.cwd);
+  const prev = externalRuns.get(sessionId);
+  const next = { startedAt: activity.startedAt, cwd: found.cwd, pid };
+  const changed = !prev || prev.startedAt !== next.startedAt || prev.pid !== next.pid || prev.cwd !== next.cwd;
+  externalRuns.set(sessionId, next);
+  if (!quiet) {
+    if (!prev) publishExternalTranscript(sessionId, found.cwd, { live: true, force: true });
+    else if (sessionId === state.sessionId) scheduleExternalTranscript(sessionId, found.cwd);
+  }
+  return changed;
+}
+
+function considerExternal(id, cwd, opts = {}) {
+  if (!id) return false;
+  const changed = refreshExternal(id, cwd, opts);
+  if (changed && !opts.quiet) send("state", snapshot());
+  return externalRuns.has(canonicalSessionId(id));
+}
+
+function syncExternalRuns() {
+  const ids = new Set([...externalRuns.keys(), ...[...resumeOwners.keys()].map((id) => canonicalSessionId(id))]);
+  let changed = false;
+  for (const id of ids) {
+    if (refreshExternal(id, externalRuns.get(id)?.cwd || "")) changed = true;
+  }
+  if (changed) send("state", snapshot());
+}
+
+function setResumeOwners(entries) {
+  const next = new Map();
+  for (const [id, pid] of entries || []) {
+    if (id) next.set(String(id).toLowerCase(), Number(pid) || 0);
+  }
+  resumeOwners = next;
+}
+
+function watchTarget(filename) {
+  const name = String(filename || "").replace(/\\/g, "/");
+  const match = name.match(/(?:^|\/)([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:events\.jsonl|updates\.jsonl|chat_history\.jsonl|summary\.json)$/i);
+  if (!match) return null;
+  let cwd = "";
+  try { cwd = decodeURIComponent(match[1]); } catch { cwd = ""; }
+  return { sessionId: match[2], cwd };
+}
+
+function killResumeProcess(pid) {
+  if (!pid || pid === acp.proc?.pid) return;
+  if (typeof app.isReady !== "function") return;
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    return;
+  }
+  try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+}
+
+function scanResumeProcesses() {
+  if (typeof app.isReady !== "function" || !app.isReady()) return Promise.resolve(false);
+  if (scanResumeProcesses.pending) return scanResumeProcesses.pending;
+  const script = [
+    "$rows = @(Get-CimInstance Win32_Process -Filter \"Name='grok.exe'\" -ErrorAction SilentlyContinue)",
+    "foreach ($row in $rows) { if ($row.CommandLine) { Write-Output ($row.ProcessId.ToString() + [char]9 + $row.CommandLine) } }",
+  ].join("; ");
+  const pending = new Promise((resolve) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      timeout: 8000,
+      maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout) => {
+      scanResumeProcesses.pending = null;
+      if (error) {
+        resolve(false);
+        return;
+      }
+      const next = new Map();
+      for (const line of String(stdout || "").split(/\r?\n/)) {
+        const tab = line.indexOf("\t");
+        if (tab < 0) continue;
+        const pid = Number(line.slice(0, tab));
+        const command = line.slice(tab + 1);
+        const match = /--resume(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(command);
+        if (match && pid) next.set(match[1].toLowerCase(), pid);
+      }
+      resumeOwners = next;
+      syncExternalRuns();
+      resolve(true);
+    });
+  });
+  scanResumeProcesses.pending = pending;
+  return pending;
+}
+
+async function stopExternal(id) {
+  const sessionId = canonicalSessionId(id);
+  let ext = externalRuns.get(sessionId);
+  if (!ext) return false;
+  if (!ext.pid) await scanResumeProcesses();
+  ext = externalRuns.get(sessionId) || ext;
+  const pid = ext.pid || ownerPid(sessionId);
+  externalDismissed.set(sessionId, ext.startedAt);
+  externalTouched.delete(sessionId);
+  clearExternal(sessionId, ext.cwd);
+  killResumeProcess(pid);
+  send("state", snapshot());
+  return true;
 }
 
 function viewedRunning() {
@@ -226,6 +505,7 @@ function noticeSessionId(params) {
 
 function beginTurn(id, cwd, opts = {}) {
   if (maintenance || projectLocks.has(lockKey(cwd))) throw new Error('正在恢复数据，请稍后再试');
+  if (externalRuns.has(id)) throw new Error('这次对话正在运行');
   const slot = liveSlot(id, cwd);
   if (slot.running) throw new Error('这次对话正在运行');
   updateRecovery(id, { cwd, status: 'running', startedAt: Date.now(), prompt: String(opts.user || ''), compact: Boolean(opts.compact), itemId: opts.itemId || null });
@@ -238,12 +518,6 @@ function beginTurn(id, cwd, opts = {}) {
   slot.turnUser = String(opts.user || "").slice(0, 200);
   if (!slot.compactTurn) send('turn-start', turnInfo(id));
   return slot.gen;
-}
-
-function turnInfo(id) {
-  const slot = live.get(id);
-  if (!slot?.running || !slot.turnStartedAt || slot.compactTurn) return null;
-  return { sessionId: id, turnId: slot.turnId, startedAt: slot.turnStartedAt };
 }
 
 function stampTurn(id) {
@@ -274,6 +548,7 @@ function endTurn(id, gen) {
   stampTurn(id);
   slot.running = false;
   slot.compactTurn = false;
+  releaseObservedTurn(id);
   if (recovery().turns?.[id]?.status === 'running') updateRecovery(id, null);
   return true;
 }
@@ -286,6 +561,7 @@ function cancelLive(id) {
     slot.gen += 1;
     slot.running = false;
     slot.compactTurn = false;
+    releaseObservedTurn(id);
   }
   try {
     acp.cancel(id);
@@ -459,7 +735,7 @@ function snapshot() {
     quota: state.quota,
     running: viewedRunning(),
     runningIds: runningIds(),
-    activeTurns: Object.fromEntries([...live.keys()].map(id => [id, turnInfo(id)]).filter(([, turn]) => turn)),
+    activeTurns: Object.fromEntries([...new Set([...live.keys(), ...externalRuns.keys()])].map(id => [id, turnInfo(id)]).filter(([, turn]) => turn)),
   };
 }
 
@@ -617,8 +893,13 @@ function watchSessions() {
     try {
       const watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
         const name = String(filename || "").replace(/\\/g, "/");
-        if (name && !["summary.json", "signals.json", "updates.jsonl", "chat_history.jsonl"]
+        if (name && !["summary.json", "signals.json", "updates.jsonl", "chat_history.jsonl", "events.jsonl"]
           .some((file) => name.endsWith(file))) return;
+        const target = watchTarget(filename);
+        if (target) {
+          externalTouched.add(target.sessionId);
+          considerExternal(target.sessionId, target.cwd, { allowFresh: true });
+        }
         scheduleSessionRefresh();
       });
       sessionWatchers.push(watcher);
@@ -626,7 +907,12 @@ function watchSessions() {
       // fall back to polling
     }
   }
-  pollTimer = setInterval(scheduleSessionRefresh, 5000);
+  pollTimer = setInterval(() => {
+    scheduleSessionRefresh();
+    scanResumeProcesses();
+    syncExternalRuns();
+  }, 4000);
+  setTimeout(() => scanResumeProcesses(), 400);
 }
 
 async function switchProject(cwd, { clearSession = true } = {}) {
@@ -1279,8 +1565,16 @@ ipcMain.handle("get-state", async () => {
     if (current) state.effort = { current, options: effortOptions };
   }
   if (state.sessionId) {
+    considerExternal(state.sessionId, state.cwd, { allowFresh: true, quiet: true });
     refreshContext();
-    send('transcript', { sessionId: state.sessionId, messages: readTranscript(state.cwd, state.sessionId), live: viewedRunning(), turn: turnInfo(state.sessionId) });
+    const external = externalRuns.has(state.sessionId) && !live.get(state.sessionId)?.running;
+    send('transcript', {
+      sessionId: state.sessionId,
+      messages: external ? readLiveTranscript(state.cwd, state.sessionId) : readTranscript(state.cwd, state.sessionId),
+      live: viewedRunning(),
+      external,
+      turn: turnInfo(state.sessionId),
+    });
   }
   if (state.quota) {
     refreshQuota();
@@ -1338,7 +1632,9 @@ ipcMain.handle("load-chat", async (_event, payload) => {
   loadingId = id;
   try {
     await switchProject(cwd, { clearSession: false });
-    const messages = readTranscript(state.cwd, id);
+    considerExternal(id, cwd, { allowFresh: true, quiet: true });
+    const external = externalRuns.has(id) && !live.get(id)?.running;
+    const messages = external ? readLiveTranscript(cwd, id) : readTranscript(cwd, id);
     state.sessionId = id;
     saveSettings({ lastSessionId: id });
     const slot = liveSlot(id, state.cwd);
@@ -1361,7 +1657,13 @@ ipcMain.handle("load-chat", async (_event, payload) => {
     refreshSessions();
     refreshSkills();
     refreshContext();
-    send("transcript", { sessionId: id, messages, live: Boolean(slot.running), turn: turnInfo(id) });
+    send("transcript", {
+      sessionId: id,
+      messages,
+      live: Boolean(slot.running) || external,
+      external,
+      turn: turnInfo(id),
+    });
     send("state", snapshot());
     return snapshot();
   } finally {
@@ -1751,6 +2053,10 @@ ipcMain.handle("send-prompt", async (_event, payload) => {
 
 ipcMain.handle("cancel", async (_event, sessionId) => {
   const id = sessionId || state.sessionId;
+  if (externalRuns.has(id) && !live.get(id)?.running) {
+    await stopExternal(id);
+    return { ok: true };
+  }
   cancelLive(id);
   send("state", snapshot());
   return { ok: true };

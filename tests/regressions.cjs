@@ -11,7 +11,7 @@ fs.mkdirSync(cache, { recursive: true });
 const root = fs.mkdtempSync(path.join(cache, "regression-"));
 process.env.GROK_HOME = path.join(root, "grok");
 const { buildContext, rememberCompaction } = require("../electron/context.cjs");
-const { canonicalCwd, readTranscript, recordTurnDuration, deleteSession, listProjects } = require("../electron/sessions.cjs");
+const { canonicalCwd, readTranscript, readLiveTranscript, recordTurnDuration, deleteSession, listProjects } = require("../electron/sessions.cjs");
 const { classifyDroppedPath, classifyDroppedPaths, locateResource } = require("../electron/files.cjs");
 const { looksLikeFile } = require("../src/resource-hint.mjs");
 const { agentSpawnArgs, sessionMeta, modeSyncSteps, planRequest, questionRequest, planReply, questionReply } = require("../electron/permission-mode.cjs");
@@ -178,7 +178,7 @@ function mainHarness(options = {}) {
     setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, clearInterval() {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(file, "utf8") + "\nglobalThis.harness = { state, acp, refreshSessions, refreshContext, snapshot, saveSettings, loadSettings, beginTurn, endTurn, recovery, markInterrupted, setWindow: (value) => { win = value; } };", sandbox);
+  vm.runInContext(fs.readFileSync(file, "utf8") + "\nglobalThis.harness = { state, acp, refreshSessions, refreshContext, snapshot, saveSettings, loadSettings, beginTurn, endTurn, recovery, markInterrupted, syncExternalRuns, setResumeOwners, considerExternal, setWindow: (value) => { win = value; } };", sandbox);
   const h = sandbox.harness;
   h.state.ready = true;
   h.setWindow({webContents: { send: (_channel, event) => events.push(event) }});
@@ -455,6 +455,76 @@ test("unclosed turn_started still yields a duration, open turn does not", () => 
   const msgs = readTranscript(f.cwd, f.id).filter((item) => item.role === "assistant");
   assert.equal(msgs[0].durationMs, Date.parse("2026-09-08T02:25:51.000Z") - Date.parse("2026-09-08T02:21:40.000Z"));
   assert.equal(msgs[1].durationMs, Date.parse("2026-09-08T02:26:10.000Z") - Date.parse("2026-09-08T02:25:51.000Z"));
+});
+
+test("a resumed chat shows the open turn and the tool still running", () => {
+  const f = fixture("external-run", "01a1057d-ad64-7642-86ca-ed082f226c99");
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "design the cabin" }] }),
+    JSON.stringify({
+      type: "assistant",
+      content: [{ type: "text", text: "reading" }],
+      tool_calls: [{ id: "t1", name: "read_file", arguments: JSON.stringify({ target_file: "docs/02.md" }) }],
+    }),
+  ].join("\n") + "\n");
+  const started = new Date().toISOString();
+  fs.writeFileSync(path.join(f.dir, "events.jsonl"), [
+    JSON.stringify({ ts: started, type: "turn_started" }),
+    JSON.stringify({ ts: started, type: "tool_started", tool_name: "read_file" }),
+    JSON.stringify({ ts: started, type: "phase_changed", phase: "tool_execution" }),
+  ].join("\n") + "\n");
+  fs.writeFileSync(path.join(f.dir, "updates.jsonl"), JSON.stringify({
+    params: { update: { sessionUpdate: "agent_thought_chunk", content: { text: "还在核对界面" } } },
+  }) + "\n");
+  const messages = readLiveTranscript(f.cwd, f.id);
+  const assistant = messages.at(-1);
+  assert.equal(assistant.tools.at(-1).status, "in_progress");
+  assert.match(assistant.thought, /还在核对界面/);
+  assert.equal(assistant.durationMs, undefined);
+});
+
+test("another grok resume marks the sidebar session running until that turn ends", async () => {
+  const id = "01a1057d-ad64-7642-86ca-ed082f226c98";
+  const f = fixture("external-run", id);
+  fs.writeFileSync(path.join(f.dir, "chat_history.jsonl"), [
+    JSON.stringify({ type: "user", content: [{ type: "text", text: "design the cabin" }] }),
+    JSON.stringify({
+      type: "assistant",
+      content: [{ type: "text", text: "reading" }],
+      tool_calls: [{ id: "t1", name: "read_file", arguments: JSON.stringify({ target_file: "docs/02.md" }) }],
+    }),
+  ].join("\n") + "\n");
+  const started = new Date().toISOString();
+  fs.writeFileSync(path.join(f.dir, "events.jsonl"), [
+    JSON.stringify({ ts: started, type: "turn_started" }),
+    JSON.stringify({ ts: started, type: "phase_changed", phase: "streaming_reasoning" }),
+  ].join("\n") + "\n");
+  const h = mainHarness();
+  h.state.cwd = f.cwd;
+  h.state.sessionId = f.id;
+  h.syncExternalRuns();
+  assert.equal(h.snapshot().runningIds.includes(f.id), false);
+  h.setResumeOwners([[f.id, 4242]]);
+  h.syncExternalRuns();
+  assert.ok(h.snapshot().runningIds.includes(f.id));
+  assert.equal(h.snapshot().running, true);
+  assert.equal(h.snapshot().activeTurns[f.id].startedAt, Date.parse(started));
+  const live = [...h.events].reverse().find((event) => event.type === "transcript" && event.payload?.external && event.payload?.live);
+  assert.ok(live);
+  assert.match(live.payload.messages.at(-1).text, /reading/);
+  await assert.rejects(
+    h.handlers.get("send-prompt")(null, { text: "wait", sessionId: f.id, cwd: f.cwd }),
+    /正在运行/,
+  );
+  assert.equal(h.acp.cancelled.length, 0);
+  await h.handlers.get("cancel")(null, f.id);
+  assert.equal(h.snapshot().running, false);
+  h.syncExternalRuns();
+  assert.equal(h.snapshot().runningIds.includes(f.id), false);
+  fs.appendFileSync(path.join(f.dir, "events.jsonl"), JSON.stringify({ ts: new Date().toISOString(), type: "turn_ended", outcome: "completed" }) + "\n");
+  h.setResumeOwners([]);
+  h.syncExternalRuns();
+  assert.equal(h.snapshot().runningIds.length === 0 || !h.snapshot().runningIds.includes(f.id), true);
 });
 
 test("an in-progress assistant does not inherit the previous turn duration", () => {

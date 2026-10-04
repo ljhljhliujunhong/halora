@@ -908,36 +908,103 @@ function previewKey(text) {
     .slice(0, 80);
 }
 
-function readEventDurations(dir) {
-  const file = path.join(dir, "events.jsonl");
-  if (!fs.existsSync(file)) return { durations: [], open: false };
-  let raw = "";
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return { durations: [], open: false };
-  }
-  const durations = [];
-  let open = 0;
-  for (const line of raw.split(/\n/)) {
-    if (!line.includes("turn_started") && !line.includes("turn_ended")) continue;
+const eventStates = new Map();
+
+function consumeEvents(state, text) {
+  const lines = `${state.leftover}${text}`.split(/\n/);
+  state.leftover = lines.pop() ?? "";
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line) continue;
+    if (
+      !line.includes("turn_started") &&
+      !line.includes("turn_ended") &&
+      !line.includes("phase_changed") &&
+      !line.includes("tool_started") &&
+      !line.includes("tool_completed")
+    ) {
+      continue;
+    }
     let row;
     try {
       row = JSON.parse(line);
     } catch {
       continue;
     }
-    const ts = parseTime(row.ts);
-    if (!ts) continue;
     if (row.type === "turn_started") {
-      if (open) durations.push(Math.max(0, ts - open));
-      open = ts;
-    } else if (row.type === "turn_ended" && open) {
-      durations.push(Math.max(0, ts - open));
-      open = 0;
+      const ts = parseTime(row.ts);
+      if (!ts) continue;
+      if (state.openStartedAt) state.durations.push(Math.max(0, ts - state.openStartedAt));
+      state.openStartedAt = ts;
+      state.toolBusy = false;
+      state.phase = "";
+    } else if (row.type === "turn_ended") {
+      const ts = parseTime(row.ts);
+      if (state.openStartedAt && ts) {
+        state.durations.push(Math.max(0, ts - state.openStartedAt));
+        state.openStartedAt = 0;
+      }
+      state.toolBusy = false;
+      state.phase = "";
+    } else if (row.type === "tool_started") {
+      state.toolBusy = true;
+    } else if (row.type === "tool_completed") {
+      state.toolBusy = false;
+    } else if (row.type === "phase_changed") {
+      state.phase = String(row.phase || "");
+      if (state.phase === "tool_execution" || state.phase === "permission_prompt") state.toolBusy = true;
+      else if (
+        state.phase === "streaming_reasoning" ||
+        state.phase === "streaming_text" ||
+        state.phase === "waiting_for_model" ||
+        state.phase === "idle"
+      ) {
+        state.toolBusy = false;
+      }
     }
   }
-  return { durations, open: Boolean(open) };
+}
+
+function readSessionActivity(dir) {
+  const empty = { durations: [], open: false, startedAt: 0, phase: "", toolBusy: false };
+  if (!dir) return empty;
+  const file = path.join(dir, "events.jsonl");
+  if (!fs.existsSync(file)) return empty;
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return empty;
+  }
+  let state = eventStates.get(file);
+  if (!state || stat.size < state.size) {
+    state = { size: 0, leftover: "", durations: [], openStartedAt: 0, phase: "", toolBusy: false };
+    eventStates.set(file, state);
+  }
+  if (stat.size !== state.size) {
+    const fd = fs.openSync(file, "r");
+    try {
+      const len = stat.size - state.size;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, state.size);
+      consumeEvents(state, buf.toString("utf8"));
+      state.size = stat.size;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  return {
+    durations: state.durations.slice(),
+    open: Boolean(state.openStartedAt),
+    startedAt: state.openStartedAt || 0,
+    phase: state.phase || "",
+    toolBusy: Boolean(state.toolBusy && state.openStartedAt),
+  };
+}
+
+function readEventDurations(dir) {
+  const activity = readSessionActivity(dir);
+  return { durations: activity.durations, open: activity.open, startedAt: activity.startedAt };
 }
 
 function readRecordedDurations(dir) {
@@ -1093,8 +1160,12 @@ function readTranscript(cwd, sessionId) {
   if (messages.length) return attachPlan(attachTurnDurations(messages, dir), dir);
   const file = path.join(dir, "updates.jsonl");
   if (!fs.existsSync(file)) return [];
+  return attachPlan(attachTurnDurations(foldUpdates(updatesFromRows(readJsonl(file))), dir), dir);
+}
+
+function updatesFromRows(rows) {
   const updates = [];
-  for (const row of readJsonl(file)) {
+  for (const row of rows) {
     const update = row.params?.update || row.update;
     if (!update) continue;
     const kind = update.sessionUpdate;
@@ -1108,7 +1179,146 @@ function readTranscript(cwd, sessionId) {
       updates.push(update);
     }
   }
-  return attachPlan(attachTurnDurations(foldUpdates(updates), dir), dir);
+  return updates;
+}
+
+function updatesFromTail(file, maxBytes = 262144) {
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return [];
+  }
+  const start = Math.max(0, stat.size - maxBytes);
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(stat.size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    const lines = text.split(/\n/);
+    if (start > 0) lines.shift();
+    if (text && !text.endsWith("\n")) lines.pop();
+    const rows = [];
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        rows.push(JSON.parse(line));
+      } catch {
+        // skip a torn line
+      }
+    }
+    return updatesFromRows(rows);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function joinChunk(have, more) {
+  const left = String(have || "");
+  const right = String(more || "");
+  if (!right || left.includes(right)) return left;
+  if (!left || right.includes(left)) return right;
+  const max = Math.min(left.length, right.length, 120);
+  for (let size = max; size >= 12; size -= 1) {
+    if (left.slice(-size) === right.slice(0, size)) return left + right.slice(size);
+  }
+  return left + right;
+}
+
+function sameUserText(left, right) {
+  const a = String(left?.text || "").trim();
+  const b = String(right?.text || "").trim();
+  if (!a || !b) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+function mergeAssistant(base, extra) {
+  const tools = (base.tools || []).map((tool) => ({ ...tool }));
+  for (const tool of extra.tools || []) {
+    const existing = tool.id ? tools.find((item) => item.id === tool.id) : null;
+    if (!existing) {
+      tools.push({ ...tool });
+      continue;
+    }
+    if (tool.status && tool.status !== "completed") existing.status = tool.status;
+    if (tool.output && !existing.output) existing.output = tool.output;
+    if (tool.title) existing.title = tool.title;
+  }
+  return {
+    ...base,
+    thought: joinChunk(base.thought, extra.thought),
+    text: joinChunk(base.text, extra.text),
+    tools,
+  };
+}
+
+function markLastToolRunning(messages) {
+  const last = messages.at(-1);
+  if (last?.role !== "assistant" || !last.tools?.length) return messages;
+  const tools = last.tools.map((tool, index) => (
+    index === last.tools.length - 1 ? { ...tool, status: "in_progress" } : tool
+  ));
+  return [...messages.slice(0, -1), { ...last, tools }];
+}
+
+const historyCache = new Map();
+
+function cachedTranscript(cwd, sessionId, dir) {
+  const file = path.join(dir, "chat_history.jsonl");
+  let size = -1;
+  let mtimeMs = 0;
+  try {
+    const stat = fs.statSync(file);
+    size = stat.size;
+    mtimeMs = stat.mtimeMs;
+  } catch {
+    size = -1;
+  }
+  const hit = historyCache.get(dir);
+  if (hit && hit.size === size && hit.mtimeMs === mtimeMs) return hit.messages;
+  const messages = readTranscript(cwd, sessionId);
+  historyCache.set(dir, { size, mtimeMs, messages });
+  return messages;
+}
+
+// chat_history lags a resumed turn and marks every tool completed. The live
+// tail of updates.jsonl and the open event phase fill in what is happening now.
+function decorateLiveTranscript(messages, dir) {
+  const run = readSessionActivity(dir);
+  if (!run.open) return messages.slice();
+  let folded = [];
+  const updatesFile = path.join(dir, "updates.jsonl");
+  if (fs.existsSync(updatesFile)) {
+    try {
+      folded = foldUpdates(updatesFromTail(updatesFile));
+    } catch {
+      folded = [];
+    }
+  }
+  let next = messages.slice();
+  const tailUser = [...folded].reverse().find((item) => item.role === "user");
+  const tailAssistant = folded.at(-1)?.role === "assistant" ? folded.at(-1) : null;
+  const lastUser = [...next].reverse().find((item) => item.role === "user");
+  if (tailUser && !sameUserText(lastUser, tailUser)) {
+    next = [...next, { ...tailUser, images: [...(tailUser.images || [])] }];
+    if (tailAssistant) next.push(mergeAssistant({ role: "assistant", text: "", thought: "", tools: [] }, tailAssistant));
+  } else if (tailAssistant) {
+    const last = next.at(-1);
+    if (last?.role === "assistant") next[next.length - 1] = mergeAssistant(last, tailAssistant);
+    else next = [...next, mergeAssistant({ role: "assistant", id: "a-live", text: "", thought: "", tools: [] }, tailAssistant)];
+  }
+  if (run.toolBusy) next = markLastToolRunning(next);
+  const live = next.at(-1);
+  if (live?.role === "assistant" && live.durationMs == null && !live.startedAt && run.startedAt) {
+    next[next.length - 1] = { ...live, startedAt: run.startedAt };
+  }
+  return next;
+}
+
+function readLiveTranscript(cwd, sessionId) {
+  const dir = sessionDir(cwd, sessionId);
+  if (!dir) return [];
+  return decorateLiveTranscript(cachedTranscript(cwd, sessionId, dir), dir);
 }
 
 function renameSession(cwd, sessionId, title) {
@@ -1149,6 +1359,8 @@ module.exports = {
   listSessionsForCwd,
   listProjects,
   readTranscript,
+  readLiveTranscript,
+  readSessionActivity,
   foldUpdates,
   renameSession,
   deleteSession,

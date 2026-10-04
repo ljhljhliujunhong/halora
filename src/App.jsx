@@ -1322,10 +1322,19 @@ export function App() {
           stickBottom.current = true;
           pinLock.current = Date.now() + 800;
         }
+        if (payload?.external && sid) {
+          if (payload.live && payload.turn?.startedAt) {
+            activeTurnsRef.current = { ...activeTurnsRef.current, [sid]: payload.turn };
+          } else if (!payload.live) {
+            const next = { ...activeTurnsRef.current };
+            delete next[sid];
+            activeTurnsRef.current = next;
+          }
+        }
         if (sid) {
           setCompactPhases((prev) => ({ ...prev, [sid]: "" }));
           setThreads((prev) => {
-            if (keepLive && prev[sid]?.length) return prev;
+            if (keepLive && prev[sid]?.length && !payload?.external) return prev;
             return { ...prev, [sid]: stampActiveAssistant(msgs, turn) };
           });
         }
@@ -2905,7 +2914,7 @@ export function App() {
                                 {session.pinned ? <IconPin /> : null}
                                 <span className="session-title">{session.title}</span>
                                 {(appState.runningIds || []).includes(session.id) ? (
-                                  <span className="live-dot" aria-hidden="true" />
+                                  <span className="live-dot" title="正在执行" aria-hidden="true" />
                                 ) : null}
                               </b>
                               <small>{formatTime(session.updatedAt)}</small>
